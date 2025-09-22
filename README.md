@@ -17,7 +17,7 @@
 - **后端**: Node.js, Express.js
 - **图片处理**: Sharp
 - **部署**: Vercel
-- **存储**: 文件系统 (JSON数据存储)
+- **存储**: Vercel Blob (图片) + Vercel KV (数据)
 
 ## 本地开发
 
