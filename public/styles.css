@@ -67,12 +67,18 @@ main {
 /* Hero区域 */
 .hero {
     height: 70vh;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    /* 使用图片背景 - 可以替换为你自己的图片URL */
+    background: linear-gradient(rgba(0, 0, 0, 0.2), rgba(0, 0, 0, 0.2)), 
+               url('/images/hero-bg.jpg');
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
     display: flex;
     align-items: center;
     justify-content: center;
     text-align: center;
     color: white;
+    position: relative;
 }
 
 .hero-title {
