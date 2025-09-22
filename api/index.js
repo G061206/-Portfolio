@@ -33,36 +33,33 @@ class BlobStorageManager {
         }
     }
 
-    // 上传图片到Blob，包含元数据
+    // 上传图片到Blob，将元数据编码到文件名中
     async uploadImage(buffer, metadata) {
         if (!this.isReady) throw new Error('Blob storage not initialized');
         
         try {
             const { id, title, description, originalName } = metadata;
             const timestamp = Date.now();
-            const filename = `photos/${timestamp}-${id}.jpg`;
             
-            console.log(`📤 Uploading image: ${filename}, Size: ${buffer.length} bytes`);
+            // 将元数据编码到文件名中（Base64编码以支持中文）
+            const metadataJson = JSON.stringify({
+                title: title,
+                description: description || '',
+                originalName: originalName,
+                uploadDate: new Date().toISOString()
+            });
+            const encodedMetadata = Buffer.from(metadataJson, 'utf8').toString('base64');
+            
+            // 文件名格式: photos/timestamp-id-metadata.jpg
+            const filename = `photos/${timestamp}-${id}-${encodedMetadata}.jpg`;
+            
+            console.log(`📤 Uploading image: ${filename.substring(0, 80)}..., Size: ${buffer.length} bytes`);
+            console.log(`📝 Encoded metadata:`, metadataJson);
             
             const blob = await this.blobAPI.put(filename, buffer, {
                 access: 'public',
                 contentType: 'image/jpeg',
-                addRandomSuffix: false,
-                // 将元数据存储在customMetadata中（这是正确的字段）
-                customMetadata: {
-                    title: title,
-                    description: description || '',
-                    originalName: originalName,
-                    uploadDate: new Date().toISOString(),
-                    id: id
-                }
-            });
-            
-            console.log('📝 Stored metadata:', {
-                title: title,
-                description: description || '',
-                originalName: originalName,
-                id: id
+                addRandomSuffix: false
             });
             
             console.log(`✅ Image uploaded: ${blob.url}`);
@@ -95,46 +92,75 @@ class BlobStorageManager {
             // 转换为照片对象并按时间戳排序
             const photos = blobs
                 .map(blob => {
-                    // 从文件名提取时间戳和ID
-                    const filename = blob.pathname.split('/').pop();
-                    const parts = filename.split('-');
-                    const timestamp = parts[0];
-                    const id = parts.slice(1).join('-').replace('.jpg', '');
-                    
-                    // 调试：记录metadata信息
-                    console.log(`📸 Processing blob ${id}:`, {
-                        hasMetadata: !!blob.metadata,
-                        metadata: blob.metadata,
-                        customMetadata: blob.customMetadata
-                    });
-                    
-                    // 尝试从不同地方获取标题
-                    const title = blob.metadata?.title || 
-                                blob.customMetadata?.title || 
-                                `照片 ${id.substring(0, 8)}`;
-                    
-                    const description = blob.metadata?.description || 
-                                      blob.customMetadata?.description || 
-                                      '';
-                    
-                    const originalName = blob.metadata?.originalName || 
-                                       blob.customMetadata?.originalName || 
-                                       filename;
-                    
-                    const uploadDate = blob.metadata?.uploadDate || 
-                                     blob.customMetadata?.uploadDate || 
-                                     blob.uploadedAt;
-                    
-                    return {
-                        id: id,
-                        title: title,
-                        description: description,
-                        url: blob.url,
-                        uploadDate: uploadDate,
-                        originalName: originalName,
-                        size: blob.size,
-                        timestamp: parseInt(timestamp) || 0
-                    };
+                    try {
+                        const filename = blob.pathname.split('/').pop();
+                        
+                        // 新格式：timestamp-id-metadata.jpg
+                        // 旧格式：timestamp-id.jpg
+                        const parts = filename.replace('.jpg', '').split('-');
+                        const timestamp = parts[0];
+                        
+                        let id, title, description, originalName, uploadDate;
+                        
+                        if (parts.length >= 3) {
+                            // 新格式：包含编码的元数据
+                            id = parts[1];
+                            const encodedMetadata = parts.slice(2).join('-');
+                            
+                            try {
+                                // 解码元数据
+                                const metadataJson = Buffer.from(encodedMetadata, 'base64').toString('utf8');
+                                const metadata = JSON.parse(metadataJson);
+                                
+                                title = metadata.title || `照片 ${id.substring(0, 8)}`;
+                                description = metadata.description || '';
+                                originalName = metadata.originalName || filename;
+                                uploadDate = metadata.uploadDate || blob.uploadedAt;
+                                
+                                console.log(`📸 Decoded metadata for ${id}:`, metadata);
+                            } catch (decodeError) {
+                                console.warn(`⚠️ Failed to decode metadata for ${filename}:`, decodeError.message);
+                                // 解码失败，使用默认值
+                                title = `照片 ${id.substring(0, 8)}`;
+                                description = '';
+                                originalName = filename;
+                                uploadDate = blob.uploadedAt;
+                            }
+                        } else {
+                            // 旧格式：只有timestamp-id
+                            id = parts.slice(1).join('-');
+                            title = `照片 ${id.substring(0, 8)}`;
+                            description = '';
+                            originalName = filename;
+                            uploadDate = blob.uploadedAt;
+                        }
+                        
+                        return {
+                            id: id,
+                            title: title,
+                            description: description,
+                            url: blob.url,
+                            uploadDate: uploadDate,
+                            originalName: originalName,
+                            size: blob.size,
+                            timestamp: parseInt(timestamp) || 0
+                        };
+                    } catch (error) {
+                        console.error(`❌ Error processing blob ${blob.pathname}:`, error.message);
+                        // 返回一个基本的对象，避免整个列表失败
+                        const filename = blob.pathname.split('/').pop();
+                        const id = filename.replace('.jpg', '');
+                        return {
+                            id: id,
+                            title: `照片 ${id.substring(0, 8)}`,
+                            description: '',
+                            url: blob.url,
+                            uploadDate: blob.uploadedAt,
+                            originalName: filename,
+                            size: blob.size,
+                            timestamp: 0
+                        };
+                    }
                 })
                 .sort((a, b) => b.timestamp - a.timestamp); // 按时间戳降序排列
             
@@ -158,6 +184,12 @@ class BlobStorageManager {
             const { blobs } = await this.blobAPI.list({ prefix: 'photos/' });
             const targetBlob = blobs.find(blob => {
                 const filename = blob.pathname.split('/').pop();
+                // 支持新旧两种格式：timestamp-id-metadata.jpg 或 timestamp-id.jpg
+                const parts = filename.replace('.jpg', '').split('-');
+                if (parts.length >= 2) {
+                    const id = parts[1]; // ID总是第二部分
+                    return id === photoId;
+                }
                 return filename.includes(photoId);
             });
             
