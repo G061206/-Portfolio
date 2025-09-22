@@ -18,17 +18,25 @@ async function initVercelServices() {
             const blobToken = process.env.BLOB_READ_WRITE_TOKEN;
             const redisUrl = process.env.REDIS_URL;
             
+            // 检查是否有旧的 KV 环境变量
+            const hasOldKV = process.env.KV_REST_API_URL || process.env.KV_REST_API_TOKEN;
+            
             console.log('🔍 Environment check:', {
                 hasBlobToken: !!blobToken,
                 hasRedisUrl: !!redisUrl,
+                hasOldKV: !!hasOldKV,
                 vercelEnv: process.env.VERCEL_ENV || 'not-set'
             });
             
+            if (hasOldKV) {
+                console.warn('⚠️ Detected old KV environment variables. Please remove KV_REST_API_URL and KV_REST_API_TOKEN from Vercel settings.');
+            }
+            
             if (!blobToken) {
-                console.error('❌ BLOB_READ_WRITE_TOKEN not found');
+                console.error('❌ BLOB_READ_WRITE_TOKEN not found - Please create Vercel Blob storage');
             }
             if (!redisUrl) {
-                console.error('❌ REDIS_URL not found');
+                console.error('❌ REDIS_URL not found - Please create Vercel Redis database');
             }
             
             const { put, del, list } = await import('@vercel/blob');
@@ -68,7 +76,7 @@ app.use((req, res, next) => {
     }
 });
 
-// 存储配置 - Vercel Blob + KV 版本
+// 存储配置 - Vercel Blob + Redis 版本
 const PHOTOS_DIR = path.join(process.cwd(), 'public', 'uploads');
 
 // 确保目录存在（仅本地环境）
