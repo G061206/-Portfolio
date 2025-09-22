@@ -25,15 +25,22 @@ app.use((req, res, next) => {
     }
 });
 
-// 存储配置
-const PHOTOS_DIR = path.join(process.cwd(), 'public', 'uploads');
-const DATA_FILE = path.join(process.cwd(), 'data', 'photos.json');
+// 存储配置 - Vercel 兼容版本
+const isVercel = process.env.VERCEL === '1';
+const PHOTOS_DIR = isVercel ? '/tmp/uploads' : path.join(process.cwd(), 'public', 'uploads');
+
+// 内存存储（Vercel 环境）或文件存储（本地环境）
+let photosMemoryStore = [];
 
 // 确保目录存在
 async function ensureDirectories() {
     try {
-        await fs.mkdir(PHOTOS_DIR, { recursive: true });
-        await fs.mkdir(path.dirname(DATA_FILE), { recursive: true });
+        if (!isVercel) {
+            await fs.mkdir(PHOTOS_DIR, { recursive: true });
+            await fs.mkdir(path.join(process.cwd(), 'data'), { recursive: true });
+        } else {
+            await fs.mkdir(PHOTOS_DIR, { recursive: true });
+        }
     } catch (error) {
         console.error('Error creating directories:', error);
     }
@@ -41,22 +48,35 @@ async function ensureDirectories() {
 
 // 读取照片数据
 async function readPhotosData() {
-    try {
-        const data = await fs.readFile(DATA_FILE, 'utf8');
-        return JSON.parse(data);
-    } catch (error) {
-        // 如果文件不存在，返回空数组
-        return [];
+    if (isVercel) {
+        // Vercel 环境使用内存存储
+        return photosMemoryStore;
+    } else {
+        // 本地环境使用文件存储
+        try {
+            const DATA_FILE = path.join(process.cwd(), 'data', 'photos.json');
+            const data = await fs.readFile(DATA_FILE, 'utf8');
+            return JSON.parse(data);
+        } catch (error) {
+            return [];
+        }
     }
 }
 
 // 写入照片数据
 async function writePhotosData(photos) {
-    try {
-        await fs.writeFile(DATA_FILE, JSON.stringify(photos, null, 2));
-    } catch (error) {
-        console.error('Error writing photos data:', error);
-        throw error;
+    if (isVercel) {
+        // Vercel 环境使用内存存储
+        photosMemoryStore = photos;
+    } else {
+        // 本地环境使用文件存储
+        try {
+            const DATA_FILE = path.join(process.cwd(), 'data', 'photos.json');
+            await fs.writeFile(DATA_FILE, JSON.stringify(photos, null, 2));
+        } catch (error) {
+            console.error('Error writing photos data:', error);
+            throw error;
+        }
     }
 }
 
@@ -150,11 +170,8 @@ app.post('/api/photos', upload.single('photo'), async (req, res) => {
             });
         }
         
-        // 生成唯一文件名
+        // 生成唯一ID
         const photoId = uuidv4();
-        const fileExtension = path.extname(req.file.originalname);
-        const filename = `${photoId}${fileExtension}`;
-        const filePath = path.join(PHOTOS_DIR, filename);
         
         // 使用 Sharp 处理图片（压缩和优化）
         let processedImage = sharp(req.file.buffer);
@@ -169,22 +186,33 @@ app.post('/api/photos', upload.single('photo'), async (req, res) => {
             });
         }
         
-        // 压缩图片
-        processedImage = processedImage.jpeg({ quality: 85 });
+        // 压缩图片并转换为 buffer
+        const processedBuffer = await processedImage.jpeg({ quality: 85 }).toBuffer();
         
-        // 保存处理后的图片
-        await processedImage.toFile(filePath);
+        let imageUrl;
+        
+        if (isVercel) {
+            // Vercel 环境：转换为 Base64 数据 URL
+            const base64Image = processedBuffer.toString('base64');
+            imageUrl = `data:image/jpeg;base64,${base64Image}`;
+        } else {
+            // 本地环境：保存为文件
+            const fileExtension = path.extname(req.file.originalname);
+            const filename = `${photoId}${fileExtension}`;
+            const filePath = path.join(PHOTOS_DIR, filename);
+            await fs.writeFile(filePath, processedBuffer);
+            imageUrl = `/uploads/${filename}`;
+        }
         
         // 创建照片记录
         const photo = {
             id: photoId,
             title: title.trim(),
             description: description ? description.trim() : '',
-            filename: filename,
-            url: `/uploads/${filename}`,
+            url: imageUrl,
             uploadDate: new Date().toISOString(),
             originalName: req.file.originalname,
-            size: req.file.size
+            size: processedBuffer.length
         };
         
         // 读取现有数据并添加新照片
@@ -225,13 +253,15 @@ app.delete('/api/photos/:id', async (req, res) => {
         
         const photo = photos[photoIndex];
         
-        // 删除文件
-        try {
-            const filePath = path.join(PHOTOS_DIR, photo.filename);
-            await fs.unlink(filePath);
-        } catch (fileError) {
-            console.error('Error deleting file:', fileError);
-            // 即使文件删除失败，也继续删除数据记录
+        // 只在本地环境删除文件（Vercel 环境使用 Base64 存储，无需删除文件）
+        if (!isVercel && photo.filename) {
+            try {
+                const filePath = path.join(PHOTOS_DIR, photo.filename);
+                await fs.unlink(filePath);
+            } catch (fileError) {
+                console.error('Error deleting file:', fileError);
+                // 即使文件删除失败，也继续删除数据记录
+            }
         }
         
         // 从数据中移除
