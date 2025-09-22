@@ -6,6 +6,25 @@ const { v4: uuidv4 } = require('uuid');
 const bcrypt = require('bcryptjs');
 const sharp = require('sharp');
 
+// Vercel 存储服务
+let blobAPI, kvAPI;
+const isVercel = process.env.VERCEL === '1';
+
+// 动态导入 Vercel 服务（仅在 Vercel 环境中）
+async function initVercelServices() {
+    if (isVercel) {
+        try {
+            const { put, del, list } = await import('@vercel/blob');
+            const { kv } = await import('@vercel/kv');
+            blobAPI = { put, del, list };
+            kvAPI = kv;
+            console.log('✅ Vercel Blob and KV services initialized');
+        } catch (error) {
+            console.error('❌ Failed to initialize Vercel services:', error);
+        }
+    }
+}
+
 const app = express();
 
 // 中间件配置
@@ -25,32 +44,32 @@ app.use((req, res, next) => {
     }
 });
 
-// 存储配置 - Vercel 兼容版本
-const isVercel = process.env.VERCEL === '1';
-const PHOTOS_DIR = isVercel ? '/tmp/uploads' : path.join(process.cwd(), 'public', 'uploads');
+// 存储配置 - Vercel Blob + KV 版本
+const PHOTOS_DIR = path.join(process.cwd(), 'public', 'uploads');
 
-// 内存存储（Vercel 环境）或文件存储（本地环境）
-let photosMemoryStore = [];
-
-// 确保目录存在
+// 确保目录存在（仅本地环境）
 async function ensureDirectories() {
-    try {
-        if (!isVercel) {
+    if (!isVercel) {
+        try {
             await fs.mkdir(PHOTOS_DIR, { recursive: true });
             await fs.mkdir(path.join(process.cwd(), 'data'), { recursive: true });
-        } else {
-            await fs.mkdir(PHOTOS_DIR, { recursive: true });
+        } catch (error) {
+            console.error('Error creating directories:', error);
         }
-    } catch (error) {
-        console.error('Error creating directories:', error);
     }
 }
 
 // 读取照片数据
 async function readPhotosData() {
-    if (isVercel) {
-        // Vercel 环境使用内存存储
-        return photosMemoryStore;
+    if (isVercel && kvAPI) {
+        // Vercel 环境使用 KV 存储
+        try {
+            const photos = await kvAPI.get('photos');
+            return photos ? JSON.parse(photos) : [];
+        } catch (error) {
+            console.error('Error reading from KV:', error);
+            return [];
+        }
     } else {
         // 本地环境使用文件存储
         try {
@@ -65,9 +84,14 @@ async function readPhotosData() {
 
 // 写入照片数据
 async function writePhotosData(photos) {
-    if (isVercel) {
-        // Vercel 环境使用内存存储
-        photosMemoryStore = photos;
+    if (isVercel && kvAPI) {
+        // Vercel 环境使用 KV 存储
+        try {
+            await kvAPI.set('photos', JSON.stringify(photos));
+        } catch (error) {
+            console.error('Error writing to KV:', error);
+            throw error;
+        }
     } else {
         // 本地环境使用文件存储
         try {
@@ -111,7 +135,10 @@ function requireAuth(req, res, next) {
 }
 
 // 初始化
-ensureDirectories();
+(async () => {
+    await initVercelServices();
+    await ensureDirectories();
+})();
 
 // 路由处理
 
@@ -191,10 +218,20 @@ app.post('/api/photos', upload.single('photo'), async (req, res) => {
         
         let imageUrl;
         
-        if (isVercel) {
-            // Vercel 环境：转换为 Base64 数据 URL
-            const base64Image = processedBuffer.toString('base64');
-            imageUrl = `data:image/jpeg;base64,${base64Image}`;
+        if (isVercel && blobAPI) {
+            // Vercel 环境：使用 Blob 存储
+            try {
+                const filename = `photos/${photoId}.jpg`;
+                const blob = await blobAPI.put(filename, processedBuffer, {
+                    access: 'public',
+                    contentType: 'image/jpeg'
+                });
+                imageUrl = blob.url;
+                console.log('✅ Image uploaded to Blob:', imageUrl);
+            } catch (blobError) {
+                console.error('❌ Blob upload failed:', blobError);
+                throw new Error('图片上传到云存储失败');
+            }
         } else {
             // 本地环境：保存为文件
             const fileExtension = path.extname(req.file.originalname);
@@ -253,8 +290,18 @@ app.delete('/api/photos/:id', async (req, res) => {
         
         const photo = photos[photoIndex];
         
-        // 只在本地环境删除文件（Vercel 环境使用 Base64 存储，无需删除文件）
-        if (!isVercel && photo.filename) {
+        // 删除存储的文件
+        if (isVercel && blobAPI && photo.url && !photo.url.startsWith('data:')) {
+            // Vercel 环境：从 Blob 存储删除
+            try {
+                await blobAPI.del(photo.url);
+                console.log('✅ Image deleted from Blob:', photo.url);
+            } catch (blobError) {
+                console.error('❌ Failed to delete from Blob:', blobError);
+                // 继续删除数据记录，即使文件删除失败
+            }
+        } else if (!isVercel && photo.filename) {
+            // 本地环境：删除文件
             try {
                 const filePath = path.join(PHOTOS_DIR, photo.filename);
                 await fs.unlink(filePath);
