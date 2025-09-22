@@ -96,10 +96,13 @@ async function readPhotosData() {
     if (isVercel && redisAPI) {
         // Vercel 环境使用 Redis 存储
         try {
+            console.log('🔍 Reading photos from Redis...');
             const photos = await redisAPI.get('photos');
-            return photos ? JSON.parse(photos) : [];
+            const result = photos ? JSON.parse(photos) : [];
+            console.log(`📊 Redis returned ${result.length} photos`);
+            return result;
         } catch (error) {
-            console.error('Error reading from Redis:', error);
+            console.error('❌ Error reading from Redis:', error);
             return [];
         }
     } else {
@@ -107,8 +110,11 @@ async function readPhotosData() {
         try {
             const DATA_FILE = path.join(process.cwd(), 'data', 'photos.json');
             const data = await fs.readFile(DATA_FILE, 'utf8');
-            return JSON.parse(data);
+            const result = JSON.parse(data);
+            console.log(`📊 File storage returned ${result.length} photos`);
+            return result;
         } catch (error) {
+            console.log('📂 No local data file found, returning empty array');
             return [];
         }
     }
@@ -213,12 +219,21 @@ app.post('/api/auth', async (req, res) => {
 // 获取所有照片
 app.get('/api/photos', async (req, res) => {
     try {
+        console.log('📋 Fetching photos list...');
         const photos = await readPhotosData();
+        console.log(`✅ Found ${photos.length} photos in storage`);
+        
         // 按上传时间倒序排列
         photos.sort((a, b) => new Date(b.uploadDate) - new Date(a.uploadDate));
+        
+        // 记录每张照片的基本信息（用于调试）
+        photos.forEach((photo, index) => {
+            console.log(`📸 Photo ${index + 1}: ${photo.title} (${photo.id})`);
+        });
+        
         res.json(photos);
     } catch (error) {
-        console.error('Error getting photos:', error);
+        console.error('❌ Error getting photos:', error);
         res.status(500).json({ success: false, message: '获取照片失败' });
     }
 });
@@ -346,14 +361,35 @@ app.post('/api/photos', upload.single('photo'), async (req, res) => {
                 });
             }
         } else {
-            console.warn('⚠️ Redis unavailable, skipping metadata storage');
-            // 没有 Redis 但图片已上传
-            return res.json({ 
-                success: true, 
-                message: '图片上传成功（数据库功能暂时不可用）',
-                photo: photo,
-                warning: 'Image uploaded but metadata storage disabled'
-            });
+            console.warn('⚠️ Redis unavailable, using temporary storage');
+            // 没有 Redis 但图片已上传，使用临时存储
+            try {
+                const photos = await readPhotosData();
+                photos.push(photo);
+                
+                // 在没有 Redis 的情况下，尝试使用本地文件存储
+                if (!isVercel) {
+                    await writePhotosData(photos);
+                } else {
+                    // 在 Vercel 环境中没有 Redis，暂时只能保存到内存
+                    console.warn('⚠️ No persistent storage available in Vercel without Redis');
+                }
+                
+                return res.json({ 
+                    success: true, 
+                    message: '图片上传成功（元数据存储受限）',
+                    photo: photo,
+                    warning: 'Image uploaded but metadata storage limited'
+                });
+            } catch (storageError) {
+                console.error('❌ Temporary storage also failed:', storageError);
+                return res.json({ 
+                    success: true, 
+                    message: '图片上传成功，但无法保存列表信息',
+                    photo: photo,
+                    warning: 'Image uploaded but metadata not saved'
+                });
+            }
         }
         
         res.json({ 
