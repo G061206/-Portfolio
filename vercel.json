@@ -1,9 +1,26 @@
 {
   "version": 2,
+  "functions": {
+    "api/*.js": {
+      "runtime": "@vercel/node@22.0.0"
+    }
+  },
   "rewrites": [
     {
-      "source": "/api/(.*)",
-      "destination": "/api/index.js"
+      "source": "/api/auth",
+      "destination": "/api/upload.js"
+    },
+    {
+      "source": "/api/photos",
+      "destination": "/api/upload.js"
+    },
+    {
+      "source": "/api/photos/(.*)",
+      "destination": "/api/upload.js"
+    },
+    {
+      "source": "/api/health",
+      "destination": "/api/upload.js"
     },
     {
       "source": "/admin",
