@@ -32,10 +32,22 @@ const DATA_FILE = path.join(process.cwd(), 'data', 'photos.json');
 // 确保目录存在
 async function ensureDirectories() {
     try {
+        console.log('创建目录:', PHOTOS_DIR);
         await fs.mkdir(PHOTOS_DIR, { recursive: true });
+        console.log('✅ uploads 目录创建成功');
+        
+        console.log('创建目录:', path.dirname(DATA_FILE));
         await fs.mkdir(path.dirname(DATA_FILE), { recursive: true });
+        console.log('✅ data 目录创建成功');
+        
+        // 测试写入权限
+        const testFile = path.join(PHOTOS_DIR, '.test');
+        await fs.writeFile(testFile, 'test');
+        await fs.unlink(testFile);
+        console.log('✅ 目录权限测试通过');
+        
     } catch (error) {
-        console.error('Error creating directories:', error);
+        console.error('❌ Error creating directories:', error);
     }
 }
 
@@ -94,6 +106,17 @@ function requireAuth(req, res, next) {
 ensureDirectories();
 
 // 路由处理
+
+// 健康检查端点
+app.get('/api/health', (req, res) => {
+    res.json({ 
+        success: true, 
+        message: 'API 正常运行',
+        timestamp: new Date().toISOString(),
+        uploadsDir: PHOTOS_DIR,
+        dataFile: DATA_FILE
+    });
+});
 
 // 静态路由处理
 app.get('/admin', (req, res) => {
@@ -173,7 +196,9 @@ app.post('/api/photos', upload.single('photo'), async (req, res) => {
         processedImage = processedImage.jpeg({ quality: 85 });
         
         // 保存处理后的图片
+        console.log('保存图片到:', filePath);
         await processedImage.toFile(filePath);
+        console.log('图片保存成功');
         
         // 创建照片记录
         const photo = {
@@ -200,9 +225,12 @@ app.post('/api/photos', upload.single('photo'), async (req, res) => {
         
     } catch (error) {
         console.error('Error uploading photo:', error);
+        console.error('Error stack:', error.stack);
+        console.error('Error code:', error.code);
         res.status(500).json({ 
             success: false, 
-            message: '上传失败: ' + error.message 
+            message: '上传失败: ' + error.message,
+            details: process.env.NODE_ENV === 'development' ? error.stack : undefined
         });
     }
 });
