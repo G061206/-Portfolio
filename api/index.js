@@ -245,12 +245,16 @@ app.post('/api/photos', upload.single('photo'), async (req, res) => {
         }
 
         // 检查 Vercel 服务状态
-        if (isVercel && (!blobAPI || !redisAPI)) {
-            console.error('❌ Vercel services not properly initialized');
+        if (isVercel && !blobAPI) {
+            console.error('❌ Blob storage not available');
             return res.status(500).json({
                 success: false,
-                message: 'Storage services not available. Please check configuration.'
+                message: 'Image storage not available. Please check Blob configuration.'
             });
+        }
+        
+        if (isVercel && !redisAPI) {
+            console.warn('⚠️ Redis not available, will skip metadata storage');
         }
         
         // 生成唯一ID
@@ -323,21 +327,32 @@ app.post('/api/photos', upload.single('photo'), async (req, res) => {
             size: processedBuffer.length
         };
         
-        // 读取现有数据并添加新照片
-        console.log('📝 Saving photo metadata to Redis...');
-        try {
-            const photos = await readPhotosData();
-            photos.push(photo);
-            await writePhotosData(photos);
-            console.log('✅ Photo metadata saved successfully');
-        } catch (metadataError) {
-            console.error('❌ Failed to save metadata to Redis:', metadataError);
-            // 即使 Redis 失败，也返回成功（因为图片已经上传到 Blob）
+        // 保存元数据（如果 Redis 可用）
+        if (redisAPI) {
+            console.log('📝 Saving photo metadata to Redis...');
+            try {
+                const photos = await readPhotosData();
+                photos.push(photo);
+                await writePhotosData(photos);
+                console.log('✅ Photo metadata saved successfully');
+            } catch (metadataError) {
+                console.error('❌ Failed to save metadata to Redis:', metadataError);
+                // Redis 失败但图片已上传，返回部分成功
+                return res.json({ 
+                    success: true, 
+                    message: '图片上传成功，但数据库暂时不可用',
+                    photo: photo,
+                    warning: 'Image uploaded but metadata not saved'
+                });
+            }
+        } else {
+            console.warn('⚠️ Redis unavailable, skipping metadata storage');
+            // 没有 Redis 但图片已上传
             return res.json({ 
                 success: true, 
-                message: '图片上传成功，但元数据保存可能有延迟',
+                message: '图片上传成功（数据库功能暂时不可用）',
                 photo: photo,
-                warning: 'Metadata save failed, but image was uploaded successfully'
+                warning: 'Image uploaded but metadata storage disabled'
             });
         }
         
