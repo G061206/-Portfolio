@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>后台管理 - 摄影作品集</title>
+    <link rel="stylesheet" href="admin-styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <!-- 登录界面 -->
+    <div id="loginScreen" class="login-screen">
+        <div class="login-container">
+            <h1 class="login-title">后台管理登录</h1>
+            <form id="loginForm" class="login-form">
+                <div class="form-group">
+                    <label for="password">密码</label>
+                    <input type="password" id="password" name="password" required>
+                </div>
+                <button type="submit" class="login-btn">登录</button>
+                <div id="loginError" class="error-message"></div>
+            </form>
+        </div>
+    </div>
+
+    <!-- 管理界面 -->
+    <div id="adminPanel" class="admin-panel" style="display: none;">
+        <header class="admin-header">
+            <div class="header-content">
+                <h1 class="admin-title">摄影作品管理</h1>
+                <div class="header-actions">
+                    <a href="/" target="_blank" class="view-site-btn">查看网站</a>
+                    <button id="logoutBtn" class="logout-btn">退出登录</button>
+                </div>
+            </div>
+        </header>
+
+        <main class="admin-main">
+            <div class="admin-container">
+                <!-- 上传新作品区域 -->
+                <section class="upload-section">
+                    <h2 class="section-title">上传新作品</h2>
+                    <form id="uploadForm" class="upload-form">
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="title">作品标题 *</label>
+                                <input type="text" id="title" name="title" required>
+                            </div>
+                            <div class="form-group">
+                                <label for="description">作品描述</label>
+                                <textarea id="description" name="description" rows="3"></textarea>
+                            </div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="photo">选择图片 *</label>
+                            <div class="file-input-wrapper">
+                                <input type="file" id="photo" name="photo" accept="image/*" required>
+                                <div class="file-input-display">
+                                    <span class="file-input-text">点击选择图片文件</span>
+                                    <div id="imagePreview" class="image-preview"></div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <button type="submit" class="upload-btn" id="uploadBtn">
+                            <span class="btn-text">上传作品</span>
+                            <span class="btn-loading" style="display: none;">上传中...</span>
+                        </button>
+                    </form>
+                </section>
+
+                <!-- 作品管理区域 -->
+                <section class="manage-section">
+                    <h2 class="section-title">作品管理</h2>
+                    <div class="photos-grid" id="photosGrid">
+                        <div class="loading">正在加载作品...</div>
+                    </div>
+                </section>
+            </div>
+        </main>
+    </div>
+
+    <!-- 确认删除模态框 -->
+    <div id="deleteModal" class="modal">
+        <div class="modal-content">
+            <h3>确认删除</h3>
+            <p>确定要删除这个作品吗？此操作无法撤销。</p>
+            <div class="modal-actions">
+                <button id="cancelDelete" class="btn-secondary">取消</button>
+                <button id="confirmDelete" class="btn-danger">删除</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="admin-script.js"></script>
+</body>
+</html>
