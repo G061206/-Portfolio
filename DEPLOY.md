@@ -50,16 +50,27 @@
 
 ## 环境配置
 
-### 必要的目录结构
-部署后，以下目录将自动创建：
-- `/data/` - 存储照片信息的JSON文件
-- `/public/uploads/` - 存储上传的图片文件
+### 必要的存储服务
+部署需要配置以下 Vercel 服务：
 
-### 环境变量（可选）
-如果需要自定义配置，可以在 Vercel 中设置以下环境变量：
+#### 1. Vercel Blob（图片存储）
+- 进入 Vercel Dashboard → 项目设置 → Storage
+- 创建 Blob 存储
+- 获取 `BLOB_READ_WRITE_TOKEN`
 
-- `ADMIN_PASSWORD` - 管理后台密码（默认：602160）
-- `MAX_FILE_SIZE` - 最大文件上传大小（默认：10MB）
+#### 2. Vercel KV（数据存储）
+- 在 Storage 中创建 KV 数据库
+- 获取 `KV_REST_API_URL` 和 `KV_REST_API_TOKEN`
+
+### 环境变量配置
+在 Vercel 项目设置中添加以下环境变量：
+
+| 变量名 | 值 | 说明 |
+|--------|-----|------|
+| `BLOB_READ_WRITE_TOKEN` | [从 Blob 获取] | 图片存储访问令牌 |
+| `KV_REST_API_URL` | [从 KV 获取] | 数据库连接 URL |
+| `KV_REST_API_TOKEN` | [从 KV 获取] | 数据库访问令牌 |
+| `ADMIN_PASSWORD` | 602160 | 管理后台密码（可选） |
 
 ## 域名配置
 
@@ -102,9 +113,15 @@
 - 查看 Vercel 函数日志
 
 **问题：图片上传失败**
+- **Vercel 环境已修复**: 使用 Base64 内存存储代替文件存储
 - 检查文件大小是否超过限制（10MB）
 - 确认文件格式是否为图片
 - 查看服务器日志了解具体错误
+
+**问题：Vercel 部署后数据不持久化**
+- **已解决**: 升级到 Vercel Blob + KV 存储
+- **新特性**: 永久存储、全球CDN、高性能
+- **配置指南**: 查看 `VERCEL_BLOB_SETUP.md` 文件
 
 **问题：数据不持久化**
 - Vercel 函数是无状态的，数据存储在项目文件系统中
