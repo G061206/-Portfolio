@@ -40,7 +40,7 @@ async function initVercelServices() {
             }
             
             const { put, del, list } = await import('@vercel/blob');
-            const { Redis } = await import('@vercel/redis');
+            const { Redis } = await import('@upstash/redis');
             
             blobAPI = { put, del, list };
             redisAPI = new Redis({
