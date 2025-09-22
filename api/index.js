@@ -7,7 +7,7 @@ const bcrypt = require('bcryptjs');
 const sharp = require('sharp');
 
 // Vercel 存储服务
-let blobAPI, kvAPI;
+let blobAPI, redisAPI;
 const isVercel = process.env.VERCEL === '1';
 
 // 动态导入 Vercel 服务（仅在 Vercel 环境中）
@@ -16,28 +16,30 @@ async function initVercelServices() {
         try {
             // 检查环境变量
             const blobToken = process.env.BLOB_READ_WRITE_TOKEN;
-            const kvUrl = process.env.KV_REST_API_URL;
-            const kvToken = process.env.KV_REST_API_TOKEN;
+            const redisUrl = process.env.REDIS_URL;
             
             console.log('🔍 Environment check:', {
                 hasBlobToken: !!blobToken,
-                hasKvUrl: !!kvUrl,
-                hasKvToken: !!kvToken,
+                hasRedisUrl: !!redisUrl,
                 vercelEnv: process.env.VERCEL_ENV || 'not-set'
             });
             
             if (!blobToken) {
                 console.error('❌ BLOB_READ_WRITE_TOKEN not found');
             }
-            if (!kvUrl || !kvToken) {
-                console.error('❌ KV environment variables not found');
+            if (!redisUrl) {
+                console.error('❌ REDIS_URL not found');
             }
             
             const { put, del, list } = await import('@vercel/blob');
-            const { kv } = await import('@vercel/kv');
+            const { Redis } = await import('@vercel/redis');
+            
             blobAPI = { put, del, list };
-            kvAPI = kv;
-            console.log('✅ Vercel Blob and KV services initialized');
+            redisAPI = new Redis({
+                url: redisUrl
+            });
+            
+            console.log('✅ Vercel Blob and Redis services initialized');
         } catch (error) {
             console.error('❌ Failed to initialize Vercel services:', error);
             console.error('Error details:', error.message);
@@ -83,13 +85,13 @@ async function ensureDirectories() {
 
 // 读取照片数据
 async function readPhotosData() {
-    if (isVercel && kvAPI) {
-        // Vercel 环境使用 KV 存储
+    if (isVercel && redisAPI) {
+        // Vercel 环境使用 Redis 存储
         try {
-            const photos = await kvAPI.get('photos');
+            const photos = await redisAPI.get('photos');
             return photos ? JSON.parse(photos) : [];
         } catch (error) {
-            console.error('Error reading from KV:', error);
+            console.error('Error reading from Redis:', error);
             return [];
         }
     } else {
@@ -106,12 +108,12 @@ async function readPhotosData() {
 
 // 写入照片数据
 async function writePhotosData(photos) {
-    if (isVercel && kvAPI) {
-        // Vercel 环境使用 KV 存储
+    if (isVercel && redisAPI) {
+        // Vercel 环境使用 Redis 存储
         try {
-            await kvAPI.set('photos', JSON.stringify(photos));
+            await redisAPI.set('photos', JSON.stringify(photos));
         } catch (error) {
-            console.error('Error writing to KV:', error);
+            console.error('Error writing to Redis:', error);
             throw error;
         }
     } else {
@@ -216,7 +218,7 @@ app.post('/api/photos', upload.single('photo'), async (req, res) => {
             title: req.body.title,
             isVercel: isVercel,
             hasBlobAPI: !!blobAPI,
-            hasKvAPI: !!kvAPI
+            hasRedisAPI: !!redisAPI
         });
 
         const { title, description } = req.body;
@@ -229,7 +231,7 @@ app.post('/api/photos', upload.single('photo'), async (req, res) => {
         }
 
         // 检查 Vercel 服务状态
-        if (isVercel && (!blobAPI || !kvAPI)) {
+        if (isVercel && (!blobAPI || !redisAPI)) {
             console.error('❌ Vercel services not properly initialized');
             return res.status(500).json({
                 success: false,
