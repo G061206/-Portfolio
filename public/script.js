@@ -17,7 +17,7 @@ async function loadGallery() {
         
         if (!response.ok) {
             if (response.status === 503) {
-                throw new Error('服务暂时不可用，请稍后再试');
+                throw new Error('Blob存储服务暂时不可用，请稍后再试');
             }
             throw new Error(`加载失败 (${response.status})`);
         }
