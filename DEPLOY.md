@@ -86,15 +86,35 @@
 
 ### 常见问题排查
 
+**问题：构建时报错 "Node.js Version 18.x is discontinued"**
+- 已修复：将 Node.js 版本从 18.x 升级到 22.x
+- 在 `package.json` 中设置 `"engines": { "node": "22.x" }`
+- Vercel 现在要求使用 Node.js 22 或更高版本
+
+**问题：构建时报错 "Function Runtimes must have a valid version"**
+- 已修复：更新了 `vercel.json` 配置文件
+- 使用简化的 `rewrites` 配置替代 `functions` 和 `routes`
+- 确保 `package.json` 中指定了 Node.js 版本
+
 **问题：API 接口无法访问**
 - 检查 `vercel.json` 配置是否正确
 - 确认 `api/index.js` 文件存在
 - 查看 Vercel 函数日志
 
+**问题：本地测试成功但Vercel部署后上传失败**
+- 已修复：创建了Vercel兼容的上传API
+- 使用内存存储 + Base64编码（临时方案）
+- 详细说明请查看 `VERCEL_DEPLOYMENT.md`
+
 **问题：图片上传失败**
 - 检查文件大小是否超过限制（10MB）
 - 确认文件格式是否为图片
 - 查看服务器日志了解具体错误
+
+**问题：Vercel环境下数据不持久化**
+- 当前使用内存存储，函数重启后数据会丢失
+- 生产环境建议升级到Vercel Blob或Cloudinary
+- 详情请参考 `VERCEL_DEPLOYMENT.md`
 
 **问题：数据不持久化**
 - Vercel 函数是无状态的，数据存储在项目文件系统中
