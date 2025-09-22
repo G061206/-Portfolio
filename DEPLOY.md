@@ -58,9 +58,9 @@
 - 创建 Blob 存储
 - 获取 `BLOB_READ_WRITE_TOKEN`
 
-#### 2. Vercel KV（数据存储）
-- 在 Storage 中创建 KV 数据库
-- 获取 `KV_REST_API_URL` 和 `KV_REST_API_TOKEN`
+#### 2. Vercel Redis（数据存储）
+- 在 Storage 中创建 Redis 数据库
+- 获取 `REDIS_URL`
 
 ### 环境变量配置
 在 Vercel 项目设置中添加以下环境变量：
@@ -68,8 +68,7 @@
 | 变量名 | 值 | 说明 |
 |--------|-----|------|
 | `BLOB_READ_WRITE_TOKEN` | [从 Blob 获取] | 图片存储访问令牌 |
-| `KV_REST_API_URL` | [从 KV 获取] | 数据库连接 URL |
-| `KV_REST_API_TOKEN` | [从 KV 获取] | 数据库访问令牌 |
+| `REDIS_URL` | [从 Redis 获取] | Redis 数据库连接 URL |
 | `ADMIN_PASSWORD` | 602160 | 管理后台密码（可选） |
 
 ## 域名配置
@@ -119,9 +118,9 @@
 - 查看服务器日志了解具体错误
 
 **问题：Vercel 部署后数据不持久化**
-- **已解决**: 升级到 Vercel Blob + KV 存储
+- **已解决**: 升级到 Vercel Blob + Redis 存储
 - **新特性**: 永久存储、全球CDN、高性能
-- **配置指南**: 查看 `VERCEL_BLOB_SETUP.md` 文件
+- **配置指南**: 查看 `VERCEL_REDIS_SETUP.md` 文件
 
 **问题：数据不持久化**
 - Vercel 函数是无状态的，数据存储在项目文件系统中
