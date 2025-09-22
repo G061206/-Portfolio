@@ -10,6 +10,7 @@ class StorageManager {
         this.blobAPI = null;
         this.redisAPI = null;
         this.isReady = false;
+        this.redisReady = false;
     }
 
     async initialize() {
@@ -44,13 +45,16 @@ class StorageManager {
     }
 
     async testConnections() {
-        // 测试Redis连接
+        // 测试Redis连接（非阻塞）
         try {
             await this.redisAPI.ping();
             console.log('✅ Redis connection OK');
+            this.redisReady = true;
         } catch (error) {
             console.error('❌ Redis connection failed:', error.message);
-            throw new Error('Redis connection failed');
+            console.warn('⚠️ Redis unavailable - metadata operations will be limited');
+            this.redisReady = false;
+            // 不抛出错误，允许服务继续运行
         }
         
         // Blob连接会在首次使用时测试
@@ -61,6 +65,11 @@ class StorageManager {
     async getPhotos() {
         if (!this.isReady) throw new Error('Storage not initialized');
         
+        if (!this.redisReady) {
+            console.warn('⚠️ Redis not available, returning empty photo list');
+            return [];
+        }
+        
         try {
             console.log('📋 Fetching photos from Redis...');
             const photosJson = await this.redisAPI.get('photos');
@@ -69,12 +78,18 @@ class StorageManager {
             return photos;
         } catch (error) {
             console.error('❌ Error fetching photos:', error.message);
-            throw new Error('Failed to fetch photos from database');
+            console.warn('⚠️ Redis error, returning empty list');
+            return [];
         }
     }
 
     async savePhotos(photos) {
         if (!this.isReady) throw new Error('Storage not initialized');
+        
+        if (!this.redisReady) {
+            console.warn('⚠️ Redis not available, cannot save photo metadata');
+            throw new Error('Redis unavailable - metadata cannot be saved');
+        }
         
         try {
             console.log(`💾 Saving ${photos.length} photos to Redis...`);
@@ -114,6 +129,22 @@ class StorageManager {
             console.error('❌ Image deletion failed:', error.message);
             // 不抛出错误，因为图片可能已经不存在
             console.warn('⚠️ Image deletion failed, continuing...');
+        }
+    }
+
+    // Redis重试机制
+    async retryRedisConnection() {
+        if (this.redisReady) return true;
+        
+        console.log('🔄 Retrying Redis connection...');
+        try {
+            await this.redisAPI.ping();
+            console.log('✅ Redis reconnection successful');
+            this.redisReady = true;
+            return true;
+        } catch (error) {
+            console.error('❌ Redis reconnection failed:', error.message);
+            return false;
         }
     }
 }
@@ -194,6 +225,9 @@ const requireStorage = (req, res, next) => {
             message: '存储服务不可用，请稍后重试'
         });
     }
+    
+    // 在请求上下文中添加Redis状态信息
+    req.redisReady = storage.redisReady;
     next();
 };
 
@@ -295,17 +329,41 @@ app.post('/api/photos', requireStorage, upload.single('photo'), async (req, res)
         };
         
         // 保存到数据库
-        const photos = await storage.getPhotos();
-        photos.push(photo);
-        await storage.savePhotos(photos);
-        
-        console.log(`✅ Photo uploaded successfully: ${photo.id}`);
-        
-        res.json({
-            success: true,
-            message: '照片上传成功',
-            photo: photo
-        });
+        try {
+            const photos = await storage.getPhotos();
+            photos.push(photo);
+            await storage.savePhotos(photos);
+            
+            console.log(`✅ Photo uploaded successfully: ${photo.id}`);
+            
+            res.json({
+                success: true,
+                message: '照片上传成功',
+                photo: photo
+            });
+        } catch (metadataError) {
+            console.error('❌ Failed to save metadata:', metadataError.message);
+            
+            // 图片已上传成功，但元数据保存失败
+            if (metadataError.message.includes('Redis unavailable')) {
+                res.json({
+                    success: true,
+                    message: '图片上传成功，但元数据保存失败 - 请检查Redis配置',
+                    photo: photo,
+                    warning: 'Redis not available - metadata not saved'
+                });
+            } else {
+                // 其他错误，尝试删除已上传的图片
+                try {
+                    await storage.deleteImage(imageUrl);
+                    console.log('🗑️ Cleaned up uploaded image due to metadata failure');
+                } catch (cleanupError) {
+                    console.error('⚠️ Failed to cleanup uploaded image:', cleanupError.message);
+                }
+                
+                throw metadataError;
+            }
+        }
         
     } catch (error) {
         console.error('❌ Upload error:', error);
@@ -391,6 +449,7 @@ app.get('/api/debug', (req, res) => {
         hasBlob: !!process.env.BLOB_READ_WRITE_TOKEN,
         hasRedis: !!process.env.REDIS_URL,
         storageReady: storage.isReady,
+        redisReady: storage.redisReady,
         nodeVersion: process.version,
         timestamp: new Date().toISOString()
     };
@@ -400,15 +459,51 @@ app.get('/api/debug', (req, res) => {
         config.warning = 'Old KV environment variables detected - please remove them';
     }
     
+    // 分析状态
+    let recommendation = 'Configuration issues detected';
+    if (config.hasBlob && config.hasRedis && config.storageReady) {
+        if (config.redisReady) {
+            recommendation = 'All systems operational';
+        } else {
+            recommendation = 'Blob working, Redis connection failed - check Redis URL';
+        }
+    }
+    
     console.log('🔍 Debug endpoint called:', config);
     
     res.json({
         success: true,
         config: config,
-        recommendation: config.hasBlob && config.hasRedis && config.storageReady ? 
-            'All systems operational' :
-            'Configuration issues detected'
+        recommendation: recommendation
     });
+});
+
+// Redis重试端点
+app.post('/api/retry-redis', async (req, res) => {
+    try {
+        console.log('🔄 Manual Redis retry requested...');
+        const success = await storage.retryRedisConnection();
+        
+        if (success) {
+            res.json({
+                success: true,
+                message: 'Redis连接已恢复',
+                redisReady: true
+            });
+        } else {
+            res.json({
+                success: false,
+                message: 'Redis连接重试失败，请检查环境配置',
+                redisReady: false
+            });
+        }
+    } catch (error) {
+        console.error('❌ Redis retry error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Redis重试过程中发生错误'
+        });
+    }
 });
 
 // 错误处理中间件
