@@ -4,174 +4,149 @@ const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const sharp = require('sharp');
 
-// 存储服务管理类
-class StorageManager {
+// Blob存储管理类
+class BlobStorageManager {
     constructor() {
         this.blobAPI = null;
-        this.redisAPI = null;
         this.isReady = false;
-        this.redisReady = false;
     }
 
     async initialize() {
         try {
-            console.log('🚀 Initializing storage services...');
+            console.log('🚀 Initializing Blob storage...');
             
-            // 检查环境变量
             const blobToken = process.env.BLOB_READ_WRITE_TOKEN;
-            const redisUrl = process.env.REDIS_URL;
-            
-            if (!blobToken || !redisUrl) {
-                throw new Error(`Missing environment variables: ${!blobToken ? 'BLOB_READ_WRITE_TOKEN ' : ''}${!redisUrl ? 'REDIS_URL' : ''}`);
+            if (!blobToken) {
+                throw new Error('BLOB_READ_WRITE_TOKEN environment variable not found');
             }
 
-            // 动态导入Vercel服务
+            // 动态导入Vercel Blob API
             const { put, del, list } = await import('@vercel/blob');
-            const { Redis } = await import('@upstash/redis');
-            
             this.blobAPI = { put, del, list };
-            this.redisAPI = new Redis({ url: redisUrl });
-            
-            // 测试连接
-            await this.testConnections();
             
             this.isReady = true;
-            console.log('✅ Storage services initialized successfully');
+            console.log('✅ Blob storage initialized successfully');
             
         } catch (error) {
-            console.error('❌ Storage initialization failed:', error.message);
+            console.error('❌ Blob storage initialization failed:', error.message);
             throw error;
         }
     }
 
-    async testConnections() {
-        // 测试Redis连接（非阻塞）
-        try {
-            await this.redisAPI.ping();
-            console.log('✅ Redis connection OK');
-            this.redisReady = true;
-        } catch (error) {
-            console.error('❌ Redis connection failed:', error.message);
-            console.warn('⚠️ Redis unavailable - metadata operations will be limited');
-            this.redisReady = false;
-            // 不抛出错误，允许服务继续运行
-        }
-        
-        // Blob连接会在首次使用时测试
-        console.log('✅ Blob service ready');
-    }
-
-    // 照片数据操作
-    async getPhotos() {
-        if (!this.isReady) throw new Error('Storage not initialized');
-        
-        if (!this.redisReady) {
-            console.warn('⚠️ Redis not available, returning empty photo list');
-            return [];
-        }
+    // 上传图片到Blob，包含元数据
+    async uploadImage(buffer, metadata) {
+        if (!this.isReady) throw new Error('Blob storage not initialized');
         
         try {
-            console.log('📋 Fetching photos from Redis...');
-            const photosJson = await this.redisAPI.get('photos');
-            const photos = photosJson ? JSON.parse(photosJson) : [];
-            console.log(`📊 Found ${photos.length} photos`);
-            return photos;
-        } catch (error) {
-            console.error('❌ Error fetching photos:', error.message);
-            console.warn('⚠️ Redis error, returning empty list');
-            return [];
-        }
-    }
-
-    async savePhotos(photos) {
-        if (!this.isReady) throw new Error('Storage not initialized');
-        
-        if (!this.redisReady) {
-            console.warn('⚠️ Redis not available, cannot save photo metadata');
-            throw new Error('Redis unavailable - metadata cannot be saved');
-        }
-        
-        try {
-            console.log(`💾 Saving ${photos.length} photos to Redis...`);
-            await this.redisAPI.set('photos', JSON.stringify(photos));
-            console.log('✅ Photos saved successfully');
-        } catch (error) {
-            console.error('❌ Error saving photos:', error.message);
-            throw new Error('Failed to save photos to database');
-        }
-    }
-
-    async uploadImage(buffer, filename) {
-        if (!this.isReady) throw new Error('Storage not initialized');
-        
-        try {
+            const { id, title, description, originalName } = metadata;
+            const timestamp = Date.now();
+            const filename = `photos/${timestamp}-${id}.jpg`;
+            
             console.log(`📤 Uploading image: ${filename}, Size: ${buffer.length} bytes`);
+            
             const blob = await this.blobAPI.put(filename, buffer, {
                 access: 'public',
-                contentType: 'image/jpeg'
+                contentType: 'image/jpeg',
+                // 将元数据存储在Blob的customMetadata中
+                addRandomSuffix: false,
+                metadata: {
+                    title: title,
+                    description: description || '',
+                    originalName: originalName,
+                    uploadDate: new Date().toISOString(),
+                    id: id
+                }
             });
+            
             console.log(`✅ Image uploaded: ${blob.url}`);
-            return blob.url;
+            return {
+                url: blob.url,
+                pathname: blob.pathname,
+                metadata: metadata
+            };
         } catch (error) {
             console.error('❌ Image upload failed:', error.message);
             throw new Error('Failed to upload image to storage');
         }
     }
 
-    async deleteImage(url) {
-        if (!this.isReady) throw new Error('Storage not initialized');
+    // 获取所有照片列表
+    async getPhotos() {
+        if (!this.isReady) throw new Error('Blob storage not initialized');
         
         try {
-            console.log(`🗑️ Deleting image: ${url}`);
-            await this.blobAPI.del(url);
-            console.log('✅ Image deleted successfully');
+            console.log('📋 Fetching photos from Blob storage...');
+            
+            // 列出所有photos/目录下的文件
+            const { blobs } = await this.blobAPI.list({ 
+                prefix: 'photos/',
+                limit: 1000  // 限制返回数量
+            });
+            
+            console.log(`📊 Found ${blobs.length} blobs in storage`);
+            
+            // 转换为照片对象并按时间戳排序
+            const photos = blobs
+                .map(blob => {
+                    // 从文件名提取时间戳和ID
+                    const filename = blob.pathname.split('/').pop();
+                    const parts = filename.split('-');
+                    const timestamp = parts[0];
+                    const id = parts.slice(1).join('-').replace('.jpg', '');
+                    
+                    return {
+                        id: id,
+                        title: blob.metadata?.title || `照片 ${id.substring(0, 8)}`,
+                        description: blob.metadata?.description || '',
+                        url: blob.url,
+                        uploadDate: blob.metadata?.uploadDate || blob.uploadedAt,
+                        originalName: blob.metadata?.originalName || filename,
+                        size: blob.size,
+                        timestamp: parseInt(timestamp) || 0
+                    };
+                })
+                .sort((a, b) => b.timestamp - a.timestamp); // 按时间戳降序排列
+            
+            console.log(`✅ Processed ${photos.length} photos`);
+            return photos;
+            
+        } catch (error) {
+            console.error('❌ Error fetching photos:', error.message);
+            throw new Error('Failed to fetch photos from storage');
+        }
+    }
+
+    // 删除图片
+    async deleteImage(photoId) {
+        if (!this.isReady) throw new Error('Blob storage not initialized');
+        
+        try {
+            console.log(`🗑️ Deleting photo: ${photoId}`);
+            
+            // 首先找到对应的blob
+            const { blobs } = await this.blobAPI.list({ prefix: 'photos/' });
+            const targetBlob = blobs.find(blob => {
+                const filename = blob.pathname.split('/').pop();
+                return filename.includes(photoId);
+            });
+            
+            if (!targetBlob) {
+                throw new Error('Photo not found');
+            }
+            
+            await this.blobAPI.del(targetBlob.url);
+            console.log(`✅ Photo deleted: ${photoId}`);
+            
         } catch (error) {
             console.error('❌ Image deletion failed:', error.message);
-            // 不抛出错误，因为图片可能已经不存在
-            console.warn('⚠️ Image deletion failed, continuing...');
+            throw new Error('Failed to delete image');
         }
     }
 
-    // Redis重试机制
-    async retryRedisConnection() {
-        if (this.redisReady) return true;
-        
-        console.log('🔄 Retrying Redis connection...');
-        try {
-            await this.redisAPI.ping();
-            console.log('✅ Redis reconnection successful');
-            this.redisReady = true;
-            return true;
-        } catch (error) {
-            console.error('❌ Redis reconnection failed:', error.message);
-            return false;
-        }
-    }
-
-    // 强制重新初始化Redis
-    async reinitializeRedis() {
-        console.log('🔄 Reinitializing Redis connection...');
-        
-        const redisUrl = process.env.REDIS_URL;
-        if (!redisUrl) {
-            throw new Error('REDIS_URL environment variable not found');
-        }
-        
-        try {
-            const { Redis } = await import('@upstash/redis');
-            this.redisAPI = new Redis({ url: redisUrl });
-            
-            // 测试连接
-            await this.redisAPI.ping();
-            this.redisReady = true;
-            
-            console.log('✅ Redis reinitialization successful');
-            return true;
-        } catch (error) {
-            console.error('❌ Redis reinitialization failed:', error.message);
-            this.redisReady = false;
-            throw error;
-        }
+    // 获取单个照片信息
+    async getPhoto(photoId) {
+        const photos = await this.getPhotos();
+        return photos.find(photo => photo.id === photoId);
     }
 }
 
@@ -206,7 +181,7 @@ class ImageProcessor {
 
 // 创建应用实例
 const app = express();
-const storage = new StorageManager();
+const storage = new BlobStorageManager();
 
 // 中间件配置
 app.use(express.json());
@@ -251,9 +226,6 @@ const requireStorage = (req, res, next) => {
             message: '存储服务不可用，请稍后重试'
         });
     }
-    
-    // 在请求上下文中添加Redis状态信息
-    req.redisReady = storage.redisReady;
     next();
 };
 
@@ -304,10 +276,6 @@ app.post('/api/auth', async (req, res) => {
 app.get('/api/photos', requireStorage, async (req, res) => {
     try {
         const photos = await storage.getPhotos();
-        
-        // 按上传时间倒序排列
-        photos.sort((a, b) => new Date(b.uploadDate) - new Date(a.uploadDate));
-        
         res.json(photos);
     } catch (error) {
         console.error('❌ Get photos error:', error);
@@ -333,63 +301,41 @@ app.post('/api/photos', requireStorage, upload.single('photo'), async (req, res)
 
         console.log(`📸 Processing upload: "${title}" (${req.file.size} bytes)`);
         
-        // 生成唯一ID和文件名
+        // 生成唯一ID
         const photoId = uuidv4();
-        const filename = `photos/${photoId}.jpg`;
         
         // 处理图片
         const processedBuffer = await ImageProcessor.processImage(req.file.buffer);
         
+        // 准备元数据
+        const metadata = {
+            id: photoId,
+            title: title.trim(),
+            description: description ? description.trim() : '',
+            originalName: req.file.originalname
+        };
+        
         // 上传到Blob存储
-        const imageUrl = await storage.uploadImage(processedBuffer, filename);
+        const result = await storage.uploadImage(processedBuffer, metadata);
         
         // 创建照片记录
         const photo = {
             id: photoId,
-            title: title.trim(),
-            description: description ? description.trim() : '',
-            url: imageUrl,
+            title: metadata.title,
+            description: metadata.description,
+            url: result.url,
             uploadDate: new Date().toISOString(),
-            originalName: req.file.originalname,
+            originalName: metadata.originalName,
             size: processedBuffer.length
         };
         
-        // 保存到数据库
-        try {
-            const photos = await storage.getPhotos();
-            photos.push(photo);
-            await storage.savePhotos(photos);
-            
-            console.log(`✅ Photo uploaded successfully: ${photo.id}`);
-            
-            res.json({
-                success: true,
-                message: '照片上传成功',
-                photo: photo
-            });
-        } catch (metadataError) {
-            console.error('❌ Failed to save metadata:', metadataError.message);
-            
-            // 图片已上传成功，但元数据保存失败
-            if (metadataError.message.includes('Redis unavailable')) {
-                res.json({
-                    success: true,
-                    message: '图片上传成功，但元数据保存失败 - 请检查Redis配置',
-                    photo: photo,
-                    warning: 'Redis not available - metadata not saved'
-                });
-            } else {
-                // 其他错误，尝试删除已上传的图片
-                try {
-                    await storage.deleteImage(imageUrl);
-                    console.log('🗑️ Cleaned up uploaded image due to metadata failure');
-                } catch (cleanupError) {
-                    console.error('⚠️ Failed to cleanup uploaded image:', cleanupError.message);
-                }
-                
-                throw metadataError;
-            }
-        }
+        console.log(`✅ Photo uploaded successfully: ${photo.id}`);
+        
+        res.json({
+            success: true,
+            message: '照片上传成功',
+            photo: photo
+        });
         
     } catch (error) {
         console.error('❌ Upload error:', error);
@@ -407,25 +353,8 @@ app.delete('/api/photos/:id', requireStorage, async (req, res) => {
         
         console.log(`🗑️ Deleting photo: ${photoId}`);
         
-        // 获取照片列表
-        const photos = await storage.getPhotos();
-        const photoIndex = photos.findIndex(p => p.id === photoId);
-        
-        if (photoIndex === -1) {
-            return res.status(404).json({
-                success: false,
-                message: '照片不存在'
-            });
-        }
-        
-        const photo = photos[photoIndex];
-        
-        // 从Blob存储删除图片
-        await storage.deleteImage(photo.url);
-        
-        // 从数据库移除记录
-        photos.splice(photoIndex, 1);
-        await storage.savePhotos(photos);
+        // 删除图片
+        await storage.deleteImage(photoId);
         
         console.log(`✅ Photo deleted successfully: ${photoId}`);
         
@@ -447,8 +376,7 @@ app.delete('/api/photos/:id', requireStorage, async (req, res) => {
 app.get('/api/photos/:id', requireStorage, async (req, res) => {
     try {
         const photoId = req.params.id;
-        const photos = await storage.getPhotos();
-        const photo = photos.find(p => p.id === photoId);
+        const photo = await storage.getPhoto(photoId);
         
         if (!photo) {
             return res.status(404).json({
@@ -470,53 +398,40 @@ app.get('/api/photos/:id', requireStorage, async (req, res) => {
 // 调试端点
 app.get('/api/debug', async (req, res) => {
     const config = {
-        environment: 'vercel',
+        environment: 'vercel-blob-only',
         vercelEnv: process.env.VERCEL_ENV || 'development',
         hasBlob: !!process.env.BLOB_READ_WRITE_TOKEN,
-        hasRedis: !!process.env.REDIS_URL,
         storageReady: storage.isReady,
-        redisReady: storage.redisReady,
         nodeVersion: process.version,
         timestamp: new Date().toISOString()
     };
     
     // 检查环境变量详情
-    if (process.env.REDIS_URL) {
-        config.redisUrl = process.env.REDIS_URL.substring(0, 50) + '...';
-        config.redisUrlFormat = process.env.REDIS_URL.startsWith('redis://') ? 'correct' : 'incorrect';
-    }
-    
     if (process.env.BLOB_READ_WRITE_TOKEN) {
         config.blobToken = process.env.BLOB_READ_WRITE_TOKEN.substring(0, 20) + '...';
     }
     
-    // 检查旧的KV变量
-    if (process.env.KV_REST_API_URL || process.env.KV_REST_API_TOKEN) {
-        config.warning = 'Old KV environment variables detected - please remove them';
-    }
-    
-    // 实时测试Redis连接
-    if (storage.redisAPI && process.env.REDIS_URL) {
+    // 实时测试Blob连接
+    if (storage.blobAPI && process.env.BLOB_READ_WRITE_TOKEN) {
         try {
-            await storage.redisAPI.ping();
-            config.redisTestResult = 'connection_ok';
+            const { blobs } = await storage.blobAPI.list({ limit: 1 });
+            config.blobTestResult = 'connection_ok';
+            config.totalBlobs = blobs.length;
         } catch (error) {
-            config.redisTestResult = 'connection_failed';
-            config.redisError = error.message;
+            config.blobTestResult = 'connection_failed';
+            config.blobError = error.message;
         }
     } else {
-        config.redisTestResult = 'not_initialized';
+        config.blobTestResult = 'not_initialized';
     }
     
     // 分析状态
     let recommendation = 'Configuration issues detected';
-    if (config.hasBlob && config.hasRedis && config.storageReady) {
-        if (config.redisReady && config.redisTestResult === 'connection_ok') {
-            recommendation = 'All systems operational';
-        } else if (config.redisTestResult === 'connection_failed') {
-            recommendation = 'Redis connection failed - check URL format and network';
+    if (config.hasBlob && config.storageReady) {
+        if (config.blobTestResult === 'connection_ok') {
+            recommendation = 'All systems operational - Blob-only storage ready';
         } else {
-            recommendation = 'Redis not properly initialized';
+            recommendation = 'Blob connection failed - check token';
         }
     }
     
@@ -529,110 +444,27 @@ app.get('/api/debug', async (req, res) => {
     });
 });
 
-// Redis重试端点
-app.post('/api/retry-redis', async (req, res) => {
+// 存储统计端点
+app.get('/api/stats', requireStorage, async (req, res) => {
     try {
-        console.log('🔄 Manual Redis retry requested...');
+        const photos = await storage.getPhotos();
+        const totalSize = photos.reduce((sum, photo) => sum + (photo.size || 0), 0);
         
-        // 首先尝试简单重试
-        let success = await storage.retryRedisConnection();
-        
-        // 如果简单重试失败，尝试重新初始化
-        if (!success) {
-            console.log('🔄 Simple retry failed, attempting reinitialization...');
-            await storage.reinitializeRedis();
-            success = true;
-        }
-        
-        if (success) {
-            res.json({
-                success: true,
-                message: 'Redis连接已恢复',
-                redisReady: true
-            });
-        } else {
-            res.json({
-                success: false,
-                message: 'Redis连接重试失败，请检查环境配置',
-                redisReady: false
-            });
-        }
+        res.json({
+            success: true,
+            stats: {
+                totalPhotos: photos.length,
+                totalSize: totalSize,
+                totalSizeMB: Math.round(totalSize / 1024 / 1024 * 100) / 100,
+                oldestPhoto: photos.length > 0 ? photos[photos.length - 1].uploadDate : null,
+                newestPhoto: photos.length > 0 ? photos[0].uploadDate : null
+            }
+        });
     } catch (error) {
-        console.error('❌ Redis retry error:', error);
+        console.error('❌ Stats error:', error);
         res.status(500).json({
             success: false,
-            message: 'Redis重试失败: ' + error.message
-        });
-    }
-});
-
-// 从Blob恢复数据端点
-app.post('/api/recover-from-blob', async (req, res) => {
-    try {
-        console.log('🔄 Attempting to recover data from Blob storage...');
-        
-        if (!storage.isReady || !storage.blobAPI) {
-            return res.status(503).json({
-                success: false,
-                message: 'Blob存储不可用'
-            });
-        }
-        
-        // 列出所有Blob中的图片
-        const { blobs } = await storage.blobAPI.list({ prefix: 'photos/' });
-        console.log(`📋 Found ${blobs.length} images in Blob storage`);
-        
-        if (blobs.length === 0) {
-            return res.json({
-                success: true,
-                message: 'Blob存储中没有找到图片',
-                recovered: 0
-            });
-        }
-        
-        // 将Blob数据转换为照片记录
-        const photos = blobs.map((blob, index) => {
-            const filename = blob.pathname.split('/').pop();
-            const id = filename ? filename.split('.')[0] : `recovered-${index}`;
-            
-            return {
-                id: id,
-                title: `恢复的图片 ${index + 1}`,
-                description: '从Blob存储恢复的图片',
-                url: blob.url,
-                uploadDate: blob.uploadedAt || new Date().toISOString(),
-                originalName: filename || 'recovered.jpg',
-                size: blob.size || 0
-            };
-        });
-        
-        // 尝试保存到Redis
-        if (storage.redisReady) {
-            await storage.savePhotos(photos);
-            console.log(`✅ Successfully recovered ${photos.length} photos to Redis`);
-            
-            res.json({
-                success: true,
-                message: `成功从Blob恢复 ${photos.length} 张图片到Redis`,
-                recovered: photos.length,
-                photos: photos
-            });
-        } else {
-            console.warn('⚠️ Redis not ready, cannot save recovered data');
-            res.json({
-                success: false,
-                message: 'Redis不可用，无法保存恢复的数据',
-                recovered: 0,
-                foundInBlob: photos.length,
-                photos: photos
-            });
-        }
-        
-    } catch (error) {
-        console.error('❌ Recovery error:', error);
-        res.status(500).json({
-            success: false,
-            message: '恢复失败: ' + error.message
+            message: '获取统计信息失败'
         });
     }
 });
@@ -676,10 +508,10 @@ app.get('*', (req, res) => {
 async function initializeApp() {
     try {
         await storage.initialize();
-        console.log('🎉 Application ready!');
+        console.log('🎉 Blob-only application ready!');
     } catch (error) {
         console.error('💥 Application initialization failed:', error.message);
-        console.error('Please check your Vercel Blob and Redis configuration');
+        console.error('Please check your Vercel Blob configuration');
     }
 }
 
@@ -691,11 +523,12 @@ if (require.main === module) {
     const PORT = process.env.PORT || 3000;
     app.listen(PORT, () => {
         console.log(`🚀 Server running on http://localhost:${PORT}`);
-        console.log(`📸 Photography Portfolio - Vercel Edition`);
+        console.log(`📸 Photography Portfolio - Blob-Only Edition`);
         console.log(`👉 Main site: http://localhost:${PORT}`);
         console.log(`🔧 Admin panel: http://localhost:${PORT}/admin`);
         console.log(`🔑 Admin password: 602160`);
         console.log(`🔍 Debug info: http://localhost:${PORT}/api/debug`);
+        console.log(`📊 Stats: http://localhost:${PORT}/api/stats`);
     });
 }
 
