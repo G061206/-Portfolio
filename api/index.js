@@ -119,9 +119,15 @@ async function writePhotosData(photos) {
     if (isVercel && redisAPI) {
         // Vercel 环境使用 Redis 存储
         try {
+            console.log(`🔄 Writing ${photos.length} photos to Redis...`);
             await redisAPI.set('photos', JSON.stringify(photos));
+            console.log('✅ Successfully wrote photos to Redis');
         } catch (error) {
-            console.error('Error writing to Redis:', error);
+            console.error('❌ Error writing to Redis:', {
+                error: error.message,
+                stack: error.stack,
+                redisConnected: !!redisAPI
+            });
             throw error;
         }
     } else {
@@ -318,9 +324,22 @@ app.post('/api/photos', upload.single('photo'), async (req, res) => {
         };
         
         // 读取现有数据并添加新照片
-        const photos = await readPhotosData();
-        photos.push(photo);
-        await writePhotosData(photos);
+        console.log('📝 Saving photo metadata to Redis...');
+        try {
+            const photos = await readPhotosData();
+            photos.push(photo);
+            await writePhotosData(photos);
+            console.log('✅ Photo metadata saved successfully');
+        } catch (metadataError) {
+            console.error('❌ Failed to save metadata to Redis:', metadataError);
+            // 即使 Redis 失败，也返回成功（因为图片已经上传到 Blob）
+            return res.json({ 
+                success: true, 
+                message: '图片上传成功，但元数据保存可能有延迟',
+                photo: photo,
+                warning: 'Metadata save failed, but image was uploaded successfully'
+            });
+        }
         
         res.json({ 
             success: true, 
