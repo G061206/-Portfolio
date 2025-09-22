@@ -154,18 +154,22 @@ async function handleUpload(e) {
         
         if (result.success) {
             // 显示成功消息
-            showMessage('✅ 作品上传成功！', 'success');
+            showMessage('✅ 作品上传成功！图片已保存到云存储', 'success');
             form.reset();
             document.getElementById('imagePreview').innerHTML = '';
             document.querySelector('.file-input-text').textContent = '点击选择图片文件';
-            loadPhotos(); // 重新加载作品列表
+            
+            // 延迟一下再重新加载，确保Blob存储同步完成
+            setTimeout(() => {
+                loadPhotos();
+            }, 1000);
         } else {
             showMessage(`❌ 上传失败: ${result.message || '未知错误'}`, 'error');
         }
     } catch (error) {
         console.error('❌ Upload error:', error);
         if (error.message.includes('503')) {
-            showMessage('❌ 存储服务不可用，请稍后重试', 'error');
+            showMessage('❌ Blob存储服务不可用，请稍后重试', 'error');
         } else {
             showMessage('❌ 上传失败，请检查网络连接后重试', 'error');
         }
@@ -188,7 +192,7 @@ async function loadPhotos() {
         
         if (!response.ok) {
             if (response.status === 503) {
-                throw new Error('存储服务暂时不可用，请稍后重试');
+                throw new Error('Blob存储服务暂时不可用，请稍后重试');
             }
             throw new Error(`加载失败 (${response.status})`);
         }
