@@ -3,13 +3,15 @@
 ## 📋 准备工作
 
 ### 1. 安装 Node.js
-确保你的系统已安装 Node.js (版本 18 或更高)：
+确保你的系统已安装 Node.js (版本 22 或更高)：
 ```bash
 node --version
 npm --version
 ```
 
-如果没有安装，请从 [Node.js 官网](https://nodejs.org/) 下载安装。
+**注意**: Vercel 现在要求 Node.js 22.x 版本，建议本地也使用相同版本以避免兼容性问题。
+
+如果没有安装，请从 [Node.js 官网](https://nodejs.org/) 下载安装最新的 LTS 版本。
 
 ### 2. 安装项目依赖
 在项目根目录运行：
