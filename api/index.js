@@ -45,6 +45,7 @@ class BlobStorageManager {
             const encodedTitle = encodeURIComponent(title).replace(/[.'()*]/g, '');
             
             // 文件名格式: photos/timestamp-id-title.jpg
+            // 注意：id已经是完整的UUID（包含破折号），无需额外处理
             const filename = `photos/${timestamp}-${id}-${encodedTitle}.jpg`;
             
             console.log(`📤 Uploading image: ${filename}, Size: ${buffer.length} bytes`);
@@ -95,46 +96,62 @@ class BlobStorageManager {
                         let id, title, description, originalName, uploadDate;
                         
                         if (parts.length >= 3) {
-                            // 新格式处理
-                            id = parts[1];
+                            // 新格式处理 - 需要正确处理UUID格式
+                            // UUID格式: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx (包含4个破折号)
                             
-                            // 检查是否为Base64编码格式（旧的长格式）
-                            const possibleTitle = parts.slice(2).join('-');
-                            
-                            if (possibleTitle.length > 50 && /^[A-Za-z0-9+/=]+$/.test(possibleTitle)) {
-                                // Base64格式（旧的复杂格式）
-                                try {
-                                    const metadataJson = Buffer.from(possibleTitle, 'base64').toString('utf8');
-                                    const metadata = JSON.parse(metadataJson);
-                                    title = metadata.title || `照片 ${id.substring(0, 8)}`;
-                                    description = metadata.description || '';
-                                    originalName = metadata.originalName || filename;
-                                    uploadDate = metadata.uploadDate || blob.uploadedAt;
-                                    
-                                    console.log(`📸 Base64 decoded for ${id}: ${title}`);
-                                } catch (decodeError) {
-                                    console.warn(`⚠️ Base64 decode failed for ${filename}:`, decodeError.message);
-                                    title = `照片 ${id.substring(0, 8)}`;
-                                    description = '';
-                                    originalName = filename;
-                                    uploadDate = blob.uploadedAt;
+                            // 找到完整的UUID（应该包含5个部分，由4个破折号分隔）
+                            if (parts.length >= 6) {
+                                // 完整UUID: parts[1]-parts[2]-parts[3]-parts[4]-parts[5]
+                                id = `${parts[1]}-${parts[2]}-${parts[3]}-${parts[4]}-${parts[5]}`;
+                                const possibleTitle = parts.slice(6).join('-');
+                                
+                                console.log(`📸 UUID found: ${id}, title part: ${possibleTitle}`);
+                                
+                                // 检查是否为Base64编码格式（旧的长格式）
+                                if (possibleTitle.length > 50 && /^[A-Za-z0-9+/=]+$/.test(possibleTitle)) {
+                                    // Base64格式（旧的复杂格式）
+                                    try {
+                                        const metadataJson = Buffer.from(possibleTitle, 'base64').toString('utf8');
+                                        const metadata = JSON.parse(metadataJson);
+                                        title = metadata.title || `照片 ${id.substring(0, 8)}`;
+                                        description = metadata.description || '';
+                                        originalName = metadata.originalName || filename;
+                                        uploadDate = metadata.uploadDate || blob.uploadedAt;
+                                        
+                                        console.log(`📸 Base64 decoded for ${id}: ${title}`);
+                                    } catch (decodeError) {
+                                        console.warn(`⚠️ Base64 decode failed for ${filename}:`, decodeError.message);
+                                        title = `照片 ${id.substring(0, 8)}`;
+                                        description = '';
+                                        originalName = filename;
+                                        uploadDate = blob.uploadedAt;
+                                    }
+                                } else {
+                                    // URL编码格式（新的简化格式）
+                                    try {
+                                        title = decodeURIComponent(possibleTitle);
+                                        description = '';
+                                        originalName = filename;
+                                        uploadDate = blob.uploadedAt;
+                                        
+                                        console.log(`📸 URL decoded for ${id}: ${title}`);
+                                    } catch (decodeError) {
+                                        console.warn(`⚠️ URL decode failed for ${filename}:`, decodeError.message);
+                                        title = possibleTitle; // 直接使用原始标题
+                                        description = '';
+                                        originalName = filename;
+                                        uploadDate = blob.uploadedAt;
+                                    }
                                 }
                             } else {
-                                // URL编码格式（新的简化格式）
-                                try {
-                                    title = decodeURIComponent(possibleTitle);
-                                    description = '';
-                                    originalName = filename;
-                                    uploadDate = blob.uploadedAt;
-                                    
-                                    console.log(`📸 URL decoded for ${id}: ${title}`);
-                                } catch (decodeError) {
-                                    console.warn(`⚠️ URL decode failed for ${filename}:`, decodeError.message);
-                                    title = possibleTitle; // 直接使用原始标题
-                                    description = '';
-                                    originalName = filename;
-                                    uploadDate = blob.uploadedAt;
-                                }
+                                // 不完整的格式，按旧逻辑处理（可能是简短UUID或其他格式）
+                                id = parts.slice(1).join('-');
+                                title = `照片 ${id.substring(0, 8)}`;
+                                description = '';
+                                originalName = filename;
+                                uploadDate = blob.uploadedAt;
+                                
+                                console.log(`📸 Fallback format for ${id}`);
                             }
                         } else {
                             // 旧格式：只有timestamp-id
@@ -194,12 +211,18 @@ class BlobStorageManager {
             const { blobs } = await this.blobAPI.list({ prefix: 'photos/' });
             const targetBlob = blobs.find(blob => {
                 const filename = blob.pathname.split('/').pop();
-                // 支持新旧两种格式：timestamp-id-metadata.jpg 或 timestamp-id.jpg
                 const parts = filename.replace('.jpg', '').split('-');
-                if (parts.length >= 2) {
-                    const id = parts[1]; // ID总是第二部分
+                
+                if (parts.length >= 6) {
+                    // 完整UUID格式: timestamp-uuid1-uuid2-uuid3-uuid4-uuid5-title
+                    const id = `${parts[1]}-${parts[2]}-${parts[3]}-${parts[4]}-${parts[5]}`;
                     return id === photoId;
+                } else if (parts.length >= 2) {
+                    // 旧格式或其他格式
+                    const id = parts.slice(1).join('-');
+                    return id.includes(photoId) || photoId.includes(id);
                 }
+                
                 return filename.includes(photoId);
             });
             
@@ -366,9 +389,9 @@ app.post('/api/photos', requireStorage, upload.single('photo'), async (req, res)
         
         // 验证输入
         if (!title || !req.file) {
-            return res.status(400).json({
-                success: false,
-                message: '标题和图片都是必需的'
+            return res.status(400).json({ 
+                success: false, 
+                message: '标题和图片都是必需的' 
             });
         }
 
@@ -404,17 +427,17 @@ app.post('/api/photos', requireStorage, upload.single('photo'), async (req, res)
         
         console.log(`✅ Photo uploaded successfully: ${photo.id}`);
         
-        res.json({
-            success: true,
+        res.json({ 
+            success: true, 
             message: '照片上传成功',
             photo: photo
         });
         
     } catch (error) {
         console.error('❌ Upload error:', error);
-        res.status(500).json({
-            success: false,
-            message: '上传失败: ' + error.message
+        res.status(500).json({ 
+            success: false, 
+            message: '上传失败: ' + error.message 
         });
     }
 });
@@ -431,16 +454,16 @@ app.delete('/api/photos/:id', requireStorage, async (req, res) => {
         
         console.log(`✅ Photo deleted successfully: ${photoId}`);
         
-        res.json({
-            success: true,
-            message: '照片删除成功'
+        res.json({ 
+            success: true, 
+            message: '照片删除成功' 
         });
         
     } catch (error) {
         console.error('❌ Delete error:', error);
-        res.status(500).json({
-            success: false,
-            message: '删除失败: ' + error.message
+        res.status(500).json({ 
+            success: false, 
+            message: '删除失败: ' + error.message 
         });
     }
 });
@@ -452,18 +475,18 @@ app.get('/api/photos/:id', requireStorage, async (req, res) => {
         const photo = await storage.getPhoto(photoId);
         
         if (!photo) {
-            return res.status(404).json({
-                success: false,
-                message: '照片不存在'
+            return res.status(404).json({ 
+                success: false, 
+                message: '照片不存在' 
             });
         }
         
         res.json(photo);
     } catch (error) {
         console.error('❌ Get photo error:', error);
-        res.status(500).json({
-            success: false,
-            message: '获取照片失败'
+        res.status(500).json({ 
+            success: false, 
+            message: '获取照片失败' 
         });
     }
 });
@@ -561,8 +584,12 @@ app.get('/api/test-decode', requireStorage, async (req, res) => {
                 partsCount: parts.length
             };
             
-            if (parts.length >= 3) {
-                const possibleTitle = parts.slice(2).join('-');
+            if (parts.length >= 6) {
+                // 完整UUID格式
+                const id = `${parts[1]}-${parts[2]}-${parts[3]}-${parts[4]}-${parts[5]}`;
+                const possibleTitle = parts.slice(6).join('-');
+                
+                result.uuid = id;
                 result.encodedPart = possibleTitle;
                 result.encodedLength = possibleTitle.length;
                 result.isBase64Like = /^[A-Za-z0-9+/=]+$/.test(possibleTitle);
@@ -587,6 +614,13 @@ app.get('/api/test-decode', requireStorage, async (req, res) => {
                         result.title = possibleTitle;
                     }
                 }
+            } else if (parts.length >= 3) {
+                // 旧格式或不完整格式
+                const possibleTitle = parts.slice(2).join('-');
+                result.encodedPart = possibleTitle;
+                result.encodedLength = possibleTitle.length;
+                result.isBase64Like = /^[A-Za-z0-9+/=]+$/.test(possibleTitle);
+                result.title = "旧格式文件";
             }
             
             return result;
@@ -659,23 +693,23 @@ app.use((error, req, res, next) => {
     
     if (error instanceof multer.MulterError) {
         if (error.code === 'LIMIT_FILE_SIZE') {
-            return res.status(400).json({
-                success: false,
-                message: '文件大小不能超过 10MB'
+            return res.status(400).json({ 
+                success: false, 
+                message: '文件大小不能超过 10MB' 
             });
         }
     }
     
-    res.status(500).json({
-        success: false,
-        message: '服务器内部错误'
+    res.status(500).json({ 
+        success: false, 
+        message: '服务器内部错误' 
     });
 });
 
 // API 404处理
 app.use('/api/*', (req, res) => {
-    res.status(404).json({
-        success: false,
+    res.status(404).json({ 
+        success: false, 
         message: 'API端点不存在'
     });
 });
