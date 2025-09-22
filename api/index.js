@@ -14,6 +14,25 @@ const isVercel = process.env.VERCEL === '1';
 async function initVercelServices() {
     if (isVercel) {
         try {
+            // 检查环境变量
+            const blobToken = process.env.BLOB_READ_WRITE_TOKEN;
+            const kvUrl = process.env.KV_REST_API_URL;
+            const kvToken = process.env.KV_REST_API_TOKEN;
+            
+            console.log('🔍 Environment check:', {
+                hasBlobToken: !!blobToken,
+                hasKvUrl: !!kvUrl,
+                hasKvToken: !!kvToken,
+                vercelEnv: process.env.VERCEL_ENV || 'not-set'
+            });
+            
+            if (!blobToken) {
+                console.error('❌ BLOB_READ_WRITE_TOKEN not found');
+            }
+            if (!kvUrl || !kvToken) {
+                console.error('❌ KV environment variables not found');
+            }
+            
             const { put, del, list } = await import('@vercel/blob');
             const { kv } = await import('@vercel/kv');
             blobAPI = { put, del, list };
@@ -21,7 +40,10 @@ async function initVercelServices() {
             console.log('✅ Vercel Blob and KV services initialized');
         } catch (error) {
             console.error('❌ Failed to initialize Vercel services:', error);
+            console.error('Error details:', error.message);
         }
+    } else {
+        console.log('🏠 Local environment detected, using file storage');
     }
 }
 
@@ -188,12 +210,30 @@ app.get('/api/photos', async (req, res) => {
 // 上传新照片
 app.post('/api/photos', upload.single('photo'), async (req, res) => {
     try {
+        console.log('📤 Upload request received:', {
+            hasFile: !!req.file,
+            fileSize: req.file?.size,
+            title: req.body.title,
+            isVercel: isVercel,
+            hasBlobAPI: !!blobAPI,
+            hasKvAPI: !!kvAPI
+        });
+
         const { title, description } = req.body;
         
         if (!title || !req.file) {
             return res.status(400).json({ 
                 success: false, 
                 message: '标题和图片都是必需的' 
+            });
+        }
+
+        // 检查 Vercel 服务状态
+        if (isVercel && (!blobAPI || !kvAPI)) {
+            console.error('❌ Vercel services not properly initialized');
+            return res.status(500).json({
+                success: false,
+                message: 'Storage services not available. Please check configuration.'
             });
         }
         
@@ -222,6 +262,8 @@ app.post('/api/photos', upload.single('photo'), async (req, res) => {
             // Vercel 环境：使用 Blob 存储
             try {
                 const filename = `photos/${photoId}.jpg`;
+                console.log('🔄 Uploading to Blob:', filename, 'Size:', processedBuffer.length);
+                
                 const blob = await blobAPI.put(filename, processedBuffer, {
                     access: 'public',
                     contentType: 'image/jpeg'
@@ -229,8 +271,21 @@ app.post('/api/photos', upload.single('photo'), async (req, res) => {
                 imageUrl = blob.url;
                 console.log('✅ Image uploaded to Blob:', imageUrl);
             } catch (blobError) {
-                console.error('❌ Blob upload failed:', blobError);
-                throw new Error('图片上传到云存储失败');
+                console.error('❌ Blob upload failed:', {
+                    error: blobError.message,
+                    stack: blobError.stack,
+                    code: blobError.code
+                });
+                
+                // 返回更详细的错误信息
+                let errorMessage = '图片上传到云存储失败';
+                if (blobError.message.includes('token')) {
+                    errorMessage = '存储访问令牌无效，请检查 BLOB_READ_WRITE_TOKEN 配置';
+                } else if (blobError.message.includes('quota')) {
+                    errorMessage = '存储空间不足，请检查 Vercel Blob 配额';
+                }
+                
+                throw new Error(errorMessage);
             }
         } else {
             // 本地环境：保存为文件
