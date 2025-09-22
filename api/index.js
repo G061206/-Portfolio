@@ -33,7 +33,7 @@ class BlobStorageManager {
         }
     }
 
-    // 上传图片到Blob，将元数据编码到文件名中
+    // 上传图片到Blob，使用简化的URL编码标题
     async uploadImage(buffer, metadata) {
         if (!this.isReady) throw new Error('Blob storage not initialized');
         
@@ -41,20 +41,14 @@ class BlobStorageManager {
             const { id, title, description, originalName } = metadata;
             const timestamp = Date.now();
             
-            // 将元数据编码到文件名中（Base64编码以支持中文）
-            const metadataJson = JSON.stringify({
-                title: title,
-                description: description || '',
-                originalName: originalName,
-                uploadDate: new Date().toISOString()
-            });
-            const encodedMetadata = Buffer.from(metadataJson, 'utf8').toString('base64');
+            // 简化方案：只将标题进行URL编码
+            const encodedTitle = encodeURIComponent(title).replace(/[.'()*]/g, '');
             
-            // 文件名格式: photos/timestamp-id-metadata.jpg
-            const filename = `photos/${timestamp}-${id}-${encodedMetadata}.jpg`;
+            // 文件名格式: photos/timestamp-id-title.jpg
+            const filename = `photos/${timestamp}-${id}-${encodedTitle}.jpg`;
             
-            console.log(`📤 Uploading image: ${filename.substring(0, 80)}..., Size: ${buffer.length} bytes`);
-            console.log(`📝 Encoded metadata:`, metadataJson);
+            console.log(`📤 Uploading image: ${filename}, Size: ${buffer.length} bytes`);
+            console.log(`📝 Title: "${title}" → "${encodedTitle}"`);
             
             const blob = await this.blobAPI.put(filename, buffer, {
                 access: 'public',
@@ -94,37 +88,53 @@ class BlobStorageManager {
                 .map(blob => {
                     try {
                         const filename = blob.pathname.split('/').pop();
-                        
-                        // 新格式：timestamp-id-metadata.jpg
-                        // 旧格式：timestamp-id.jpg
-                        const parts = filename.replace('.jpg', '').split('-');
+                        const nameWithoutExt = filename.replace('.jpg', '');
+                        const parts = nameWithoutExt.split('-');
                         const timestamp = parts[0];
                         
                         let id, title, description, originalName, uploadDate;
                         
                         if (parts.length >= 3) {
-                            // 新格式：包含编码的元数据
+                            // 新格式处理
                             id = parts[1];
-                            const encodedMetadata = parts.slice(2).join('-');
                             
-                            try {
-                                // 解码元数据
-                                const metadataJson = Buffer.from(encodedMetadata, 'base64').toString('utf8');
-                                const metadata = JSON.parse(metadataJson);
-                                
-                                title = metadata.title || `照片 ${id.substring(0, 8)}`;
-                                description = metadata.description || '';
-                                originalName = metadata.originalName || filename;
-                                uploadDate = metadata.uploadDate || blob.uploadedAt;
-                                
-                                console.log(`📸 Decoded metadata for ${id}:`, metadata);
-                            } catch (decodeError) {
-                                console.warn(`⚠️ Failed to decode metadata for ${filename}:`, decodeError.message);
-                                // 解码失败，使用默认值
-                                title = `照片 ${id.substring(0, 8)}`;
-                                description = '';
-                                originalName = filename;
-                                uploadDate = blob.uploadedAt;
+                            // 检查是否为Base64编码格式（旧的长格式）
+                            const possibleTitle = parts.slice(2).join('-');
+                            
+                            if (possibleTitle.length > 50 && /^[A-Za-z0-9+/=]+$/.test(possibleTitle)) {
+                                // Base64格式（旧的复杂格式）
+                                try {
+                                    const metadataJson = Buffer.from(possibleTitle, 'base64').toString('utf8');
+                                    const metadata = JSON.parse(metadataJson);
+                                    title = metadata.title || `照片 ${id.substring(0, 8)}`;
+                                    description = metadata.description || '';
+                                    originalName = metadata.originalName || filename;
+                                    uploadDate = metadata.uploadDate || blob.uploadedAt;
+                                    
+                                    console.log(`📸 Base64 decoded for ${id}: ${title}`);
+                                } catch (decodeError) {
+                                    console.warn(`⚠️ Base64 decode failed for ${filename}:`, decodeError.message);
+                                    title = `照片 ${id.substring(0, 8)}`;
+                                    description = '';
+                                    originalName = filename;
+                                    uploadDate = blob.uploadedAt;
+                                }
+                            } else {
+                                // URL编码格式（新的简化格式）
+                                try {
+                                    title = decodeURIComponent(possibleTitle);
+                                    description = '';
+                                    originalName = filename;
+                                    uploadDate = blob.uploadedAt;
+                                    
+                                    console.log(`📸 URL decoded for ${id}: ${title}`);
+                                } catch (decodeError) {
+                                    console.warn(`⚠️ URL decode failed for ${filename}:`, decodeError.message);
+                                    title = possibleTitle; // 直接使用原始标题
+                                    description = '';
+                                    originalName = filename;
+                                    uploadDate = blob.uploadedAt;
+                                }
                             }
                         } else {
                             // 旧格式：只有timestamp-id
@@ -162,7 +172,7 @@ class BlobStorageManager {
                         };
                     }
                 })
-                .sort((a, b) => b.timestamp - a.timestamp); // 按时间戳降序排列
+                .sort((a, b) => b.timestamp - a.timestamp); // 按时间戳排序
             
             console.log(`✅ Processed ${photos.length} photos`);
             return photos;
@@ -528,6 +538,70 @@ app.get('/api/stats', requireStorage, async (req, res) => {
         res.status(500).json({
             success: false,
             message: '获取统计信息失败'
+        });
+    }
+});
+
+// 测试解码现有文件的端点
+app.get('/api/test-decode', requireStorage, async (req, res) => {
+    try {
+        const { blobs } = await storage.blobAPI.list({ 
+            prefix: 'photos/',
+            limit: 5  // 只检查前5个
+        });
+        
+        const decodeResults = blobs.map(blob => {
+            const filename = blob.pathname.split('/').pop();
+            const nameWithoutExt = filename.replace('.jpg', '');
+            const parts = nameWithoutExt.split('-');
+            
+            let result = {
+                filename: filename,
+                parts: parts,
+                partsCount: parts.length
+            };
+            
+            if (parts.length >= 3) {
+                const possibleTitle = parts.slice(2).join('-');
+                result.encodedPart = possibleTitle;
+                result.encodedLength = possibleTitle.length;
+                result.isBase64Like = /^[A-Za-z0-9+/=]+$/.test(possibleTitle);
+                
+                if (possibleTitle.length > 50 && /^[A-Za-z0-9+/=]+$/.test(possibleTitle)) {
+                    // 尝试Base64解码
+                    try {
+                        const metadataJson = Buffer.from(possibleTitle, 'base64').toString('utf8');
+                        const metadata = JSON.parse(metadataJson);
+                        result.base64Decoded = metadata;
+                        result.title = metadata.title;
+                    } catch (error) {
+                        result.base64Error = error.message;
+                    }
+                } else {
+                    // 尝试URL解码
+                    try {
+                        result.urlDecoded = decodeURIComponent(possibleTitle);
+                        result.title = result.urlDecoded;
+                    } catch (error) {
+                        result.urlError = error.message;
+                        result.title = possibleTitle;
+                    }
+                }
+            }
+            
+            return result;
+        });
+        
+        res.json({
+            success: true,
+            results: decodeResults
+        });
+        
+    } catch (error) {
+        console.error('❌ Test decode error:', error);
+        res.status(500).json({
+            success: false,
+            message: '测试解码失败: ' + error.message
         });
     }
 });
