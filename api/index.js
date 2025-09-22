@@ -47,15 +47,22 @@ class BlobStorageManager {
             const blob = await this.blobAPI.put(filename, buffer, {
                 access: 'public',
                 contentType: 'image/jpeg',
-                // 将元数据存储在Blob的customMetadata中
                 addRandomSuffix: false,
-                metadata: {
+                // 将元数据存储在customMetadata中（这是正确的字段）
+                customMetadata: {
                     title: title,
                     description: description || '',
                     originalName: originalName,
                     uploadDate: new Date().toISOString(),
                     id: id
                 }
+            });
+            
+            console.log('📝 Stored metadata:', {
+                title: title,
+                description: description || '',
+                originalName: originalName,
+                id: id
             });
             
             console.log(`✅ Image uploaded: ${blob.url}`);
@@ -94,13 +101,37 @@ class BlobStorageManager {
                     const timestamp = parts[0];
                     const id = parts.slice(1).join('-').replace('.jpg', '');
                     
+                    // 调试：记录metadata信息
+                    console.log(`📸 Processing blob ${id}:`, {
+                        hasMetadata: !!blob.metadata,
+                        metadata: blob.metadata,
+                        customMetadata: blob.customMetadata
+                    });
+                    
+                    // 尝试从不同地方获取标题
+                    const title = blob.metadata?.title || 
+                                blob.customMetadata?.title || 
+                                `照片 ${id.substring(0, 8)}`;
+                    
+                    const description = blob.metadata?.description || 
+                                      blob.customMetadata?.description || 
+                                      '';
+                    
+                    const originalName = blob.metadata?.originalName || 
+                                       blob.customMetadata?.originalName || 
+                                       filename;
+                    
+                    const uploadDate = blob.metadata?.uploadDate || 
+                                     blob.customMetadata?.uploadDate || 
+                                     blob.uploadedAt;
+                    
                     return {
                         id: id,
-                        title: blob.metadata?.title || `照片 ${id.substring(0, 8)}`,
-                        description: blob.metadata?.description || '',
+                        title: title,
+                        description: description,
                         url: blob.url,
-                        uploadDate: blob.metadata?.uploadDate || blob.uploadedAt,
-                        originalName: blob.metadata?.originalName || filename,
+                        uploadDate: uploadDate,
+                        originalName: originalName,
                         size: blob.size,
                         timestamp: parseInt(timestamp) || 0
                     };
@@ -465,6 +496,53 @@ app.get('/api/stats', requireStorage, async (req, res) => {
         res.status(500).json({
             success: false,
             message: '获取统计信息失败'
+        });
+    }
+});
+
+// Blob详细信息调试端点
+app.get('/api/debug-blobs', requireStorage, async (req, res) => {
+    try {
+        console.log('🔍 Debugging blob metadata...');
+        
+        const { blobs } = await storage.blobAPI.list({ 
+            prefix: 'photos/',
+            limit: 10  // 只检查前10个
+        });
+        
+        const blobDetails = blobs.map(blob => {
+            const filename = blob.pathname.split('/').pop();
+            const parts = filename.split('-');
+            const timestamp = parts[0];
+            const id = parts.slice(1).join('-').replace('.jpg', '');
+            
+            return {
+                id: id,
+                filename: filename,
+                url: blob.url,
+                size: blob.size,
+                uploadedAt: blob.uploadedAt,
+                // 检查所有可能的metadata字段
+                metadata: blob.metadata,
+                customMetadata: blob.customMetadata,
+                hasMetadata: !!blob.metadata,
+                hasCustomMetadata: !!blob.customMetadata,
+                metadataKeys: blob.metadata ? Object.keys(blob.metadata) : [],
+                customMetadataKeys: blob.customMetadata ? Object.keys(blob.customMetadata) : []
+            };
+        });
+        
+        res.json({
+            success: true,
+            totalBlobs: blobs.length,
+            blobDetails: blobDetails
+        });
+        
+    } catch (error) {
+        console.error('❌ Blob debug error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Blob调试失败: ' + error.message
         });
     }
 });
