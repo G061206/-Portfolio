@@ -147,6 +147,32 @@ class StorageManager {
             return false;
         }
     }
+
+    // 强制重新初始化Redis
+    async reinitializeRedis() {
+        console.log('🔄 Reinitializing Redis connection...');
+        
+        const redisUrl = process.env.REDIS_URL;
+        if (!redisUrl) {
+            throw new Error('REDIS_URL environment variable not found');
+        }
+        
+        try {
+            const { Redis } = await import('@upstash/redis');
+            this.redisAPI = new Redis({ url: redisUrl });
+            
+            // 测试连接
+            await this.redisAPI.ping();
+            this.redisReady = true;
+            
+            console.log('✅ Redis reinitialization successful');
+            return true;
+        } catch (error) {
+            console.error('❌ Redis reinitialization failed:', error.message);
+            this.redisReady = false;
+            throw error;
+        }
+    }
 }
 
 // 图片处理工具
@@ -442,7 +468,7 @@ app.get('/api/photos/:id', requireStorage, async (req, res) => {
 });
 
 // 调试端点
-app.get('/api/debug', (req, res) => {
+app.get('/api/debug', async (req, res) => {
     const config = {
         environment: 'vercel',
         vercelEnv: process.env.VERCEL_ENV || 'development',
@@ -454,18 +480,43 @@ app.get('/api/debug', (req, res) => {
         timestamp: new Date().toISOString()
     };
     
+    // 检查环境变量详情
+    if (process.env.REDIS_URL) {
+        config.redisUrl = process.env.REDIS_URL.substring(0, 50) + '...';
+        config.redisUrlFormat = process.env.REDIS_URL.startsWith('redis://') ? 'correct' : 'incorrect';
+    }
+    
+    if (process.env.BLOB_READ_WRITE_TOKEN) {
+        config.blobToken = process.env.BLOB_READ_WRITE_TOKEN.substring(0, 20) + '...';
+    }
+    
     // 检查旧的KV变量
     if (process.env.KV_REST_API_URL || process.env.KV_REST_API_TOKEN) {
         config.warning = 'Old KV environment variables detected - please remove them';
     }
     
+    // 实时测试Redis连接
+    if (storage.redisAPI && process.env.REDIS_URL) {
+        try {
+            await storage.redisAPI.ping();
+            config.redisTestResult = 'connection_ok';
+        } catch (error) {
+            config.redisTestResult = 'connection_failed';
+            config.redisError = error.message;
+        }
+    } else {
+        config.redisTestResult = 'not_initialized';
+    }
+    
     // 分析状态
     let recommendation = 'Configuration issues detected';
     if (config.hasBlob && config.hasRedis && config.storageReady) {
-        if (config.redisReady) {
+        if (config.redisReady && config.redisTestResult === 'connection_ok') {
             recommendation = 'All systems operational';
+        } else if (config.redisTestResult === 'connection_failed') {
+            recommendation = 'Redis connection failed - check URL format and network';
         } else {
-            recommendation = 'Blob working, Redis connection failed - check Redis URL';
+            recommendation = 'Redis not properly initialized';
         }
     }
     
@@ -482,7 +533,16 @@ app.get('/api/debug', (req, res) => {
 app.post('/api/retry-redis', async (req, res) => {
     try {
         console.log('🔄 Manual Redis retry requested...');
-        const success = await storage.retryRedisConnection();
+        
+        // 首先尝试简单重试
+        let success = await storage.retryRedisConnection();
+        
+        // 如果简单重试失败，尝试重新初始化
+        if (!success) {
+            console.log('🔄 Simple retry failed, attempting reinitialization...');
+            await storage.reinitializeRedis();
+            success = true;
+        }
         
         if (success) {
             res.json({
@@ -501,7 +561,78 @@ app.post('/api/retry-redis', async (req, res) => {
         console.error('❌ Redis retry error:', error);
         res.status(500).json({
             success: false,
-            message: 'Redis重试过程中发生错误'
+            message: 'Redis重试失败: ' + error.message
+        });
+    }
+});
+
+// 从Blob恢复数据端点
+app.post('/api/recover-from-blob', async (req, res) => {
+    try {
+        console.log('🔄 Attempting to recover data from Blob storage...');
+        
+        if (!storage.isReady || !storage.blobAPI) {
+            return res.status(503).json({
+                success: false,
+                message: 'Blob存储不可用'
+            });
+        }
+        
+        // 列出所有Blob中的图片
+        const { blobs } = await storage.blobAPI.list({ prefix: 'photos/' });
+        console.log(`📋 Found ${blobs.length} images in Blob storage`);
+        
+        if (blobs.length === 0) {
+            return res.json({
+                success: true,
+                message: 'Blob存储中没有找到图片',
+                recovered: 0
+            });
+        }
+        
+        // 将Blob数据转换为照片记录
+        const photos = blobs.map((blob, index) => {
+            const filename = blob.pathname.split('/').pop();
+            const id = filename ? filename.split('.')[0] : `recovered-${index}`;
+            
+            return {
+                id: id,
+                title: `恢复的图片 ${index + 1}`,
+                description: '从Blob存储恢复的图片',
+                url: blob.url,
+                uploadDate: blob.uploadedAt || new Date().toISOString(),
+                originalName: filename || 'recovered.jpg',
+                size: blob.size || 0
+            };
+        });
+        
+        // 尝试保存到Redis
+        if (storage.redisReady) {
+            await storage.savePhotos(photos);
+            console.log(`✅ Successfully recovered ${photos.length} photos to Redis`);
+            
+            res.json({
+                success: true,
+                message: `成功从Blob恢复 ${photos.length} 张图片到Redis`,
+                recovered: photos.length,
+                photos: photos
+            });
+        } else {
+            console.warn('⚠️ Redis not ready, cannot save recovered data');
+            res.json({
+                success: false,
+                message: 'Redis不可用，无法保存恢复的数据',
+                recovered: 0,
+                foundInBlob: photos.length,
+                photos: photos
+            });
+        }
+        
+    } catch (error) {
+        console.error('❌ Recovery error:', error);
+        res.status(500).json({
+            success: false,
+            message: '恢复失败: ' + error.message
         });
     }
 });
