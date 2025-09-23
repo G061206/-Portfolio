@@ -6,18 +6,38 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 // 加载作品展示
-async function loadGallery() {
+async function loadGallery(retryCount = 0) {
     const galleryGrid = document.getElementById('galleryGrid');
+    const maxRetries = 3;
     
     // 显示加载状态
-    galleryGrid.innerHTML = '<div class="loading">📸 正在加载精彩作品...</div>';
+    if (retryCount === 0) {
+        galleryGrid.innerHTML = '<div class="loading">📸 正在加载精彩作品...</div>';
+    }
     
     try {
+        console.log(`🔄 Loading gallery... (attempt ${retryCount + 1})`);
         const response = await fetch('/api/photos');
         
         if (!response.ok) {
             if (response.status === 503) {
-                throw new Error('Blob存储服务暂时不可用，请稍后再试');
+                // 存储服务暂时不可用，尝试重试
+                if (retryCount < maxRetries) {
+                    console.log('⏳ Storage service initializing, retrying...');
+                    galleryGrid.innerHTML = `
+                        <div class="loading">
+                            🔄 存储服务初始化中，请稍候...
+                            <br><br>
+                            <small>正在启动服务 (${retryCount + 1}/${maxRetries + 1})</small>
+                        </div>
+                    `;
+                    
+                    // 延迟后重试
+                    await new Promise(resolve => setTimeout(resolve, 2000 + retryCount * 1000));
+                    return loadGallery(retryCount + 1);
+                } else {
+                    throw new Error('存储服务启动超时，请刷新页面重试');
+                }
             }
             throw new Error(`加载失败 (${response.status})`);
         }
