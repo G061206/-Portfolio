@@ -315,14 +315,30 @@ const upload = multer({
 const ADMIN_PASSWORD = '602160';
 
 // 存储状态检查中间件
-const requireStorage = (req, res, next) => {
-    if (!storage.isReady) {
-        return res.status(503).json({
+const requireStorage = async (req, res, next) => {
+    try {
+        // 确保存储服务已初始化
+        if (!isInitialized) {
+            console.log('⏳ Storage not ready, waiting for initialization...');
+            await initializeApp();
+        }
+        
+        // 双重检查存储状态
+        if (!storage.isReady) {
+            return res.status(503).json({
+                success: false,
+                message: 'Blob存储服务暂时不可用，请稍后再试'
+            });
+        }
+        
+        next();
+    } catch (error) {
+        console.error('❌ Storage initialization failed:', error);
+        res.status(503).json({
             success: false,
-            message: '存储服务不可用，请稍后重试'
+            message: 'Blob存储服务暂时不可用，请稍后再试'
         });
     }
-    next();
 };
 
 // 静态路由
@@ -722,19 +738,51 @@ app.get('*', (req, res) => {
     res.sendFile(path.join(process.cwd(), 'public', 'index.html'));
 });
 
+// 初始化状态追踪
+let initializationPromise = null;
+let isInitialized = false;
+
 // 初始化存储服务
 async function initializeApp() {
+    if (initializationPromise) {
+        return initializationPromise;
+    }
+    
+    initializationPromise = (async () => {
+        try {
+            console.log('🚀 Starting Blob storage initialization...');
+            await storage.initialize();
+            isInitialized = true;
+            console.log('🎉 Blob-only application ready!');
+        } catch (error) {
+            console.error('💥 Application initialization failed:', error.message);
+            console.error('Please check your Vercel Blob configuration');
+            throw error;
+        }
+    })();
+    
+    return initializationPromise;
+}
+
+// 确保服务已初始化的中间件
+async function ensureInitialized(req, res, next) {
     try {
-        await storage.initialize();
-        console.log('🎉 Blob-only application ready!');
+        if (!isInitialized) {
+            console.log('⏳ Waiting for initialization...');
+            await initializeApp();
+        }
+        next();
     } catch (error) {
-        console.error('💥 Application initialization failed:', error.message);
-        console.error('Please check your Vercel Blob configuration');
+        console.error('❌ Initialization failed:', error);
+        res.status(503).json({
+            success: false,
+            message: 'Storage service is temporarily unavailable. Please try again in a moment.'
+        });
     }
 }
 
-// 启动初始化（在Vercel环境中会自动执行）
-initializeApp();
+// 启动初始化（但不阻塞）
+initializeApp().catch(console.error);
 
 // 本地开发服务器
 if (require.main === module) {
